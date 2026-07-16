@@ -16,7 +16,9 @@ type FileTreeNode = {
   name: string;
   path: string;
   children: FileTreeNode[];
+  size?: number;
 };
+type InspectedFile = { path: string; charCount: number };
 
 export function RepositoryConnectionPanel({
   projectId,
@@ -24,6 +26,7 @@ export function RepositoryConnectionPanel({
   repositoryUrl,
   repositoryName,
   repositoryTree,
+  fileSizes,
   inspectedFiles,
   languageHints,
   fastModel = "gemini-3.1-flash-lite",
@@ -35,7 +38,8 @@ export function RepositoryConnectionPanel({
   repositoryUrl: string | null;
   repositoryName: string | null;
   repositoryTree: string[];
-  inspectedFiles: string[];
+  fileSizes: Record<string, number>;
+  inspectedFiles: InspectedFile[];
   languageHints: string[];
   fastModel?: string;
   smartModel?: string;
@@ -92,13 +96,13 @@ export function RepositoryConnectionPanel({
 
     setState("idle");
     setLastScanResult("ready_for_context");
-    setMessage("Repository scan saved. Generate context when you are ready to spend one Gemini request.");
+    setMessage("Repository scan saved. Context generation uses one Gemini request, with one bounded follow-up only if the model requests more files.");
     router.refresh();
   }
 
   async function generateContextFromScan() {
     setState("generating");
-    setMessage("Grounding the project context in the saved repository scan…");
+    setMessage("Grounding the project context in the saved repository scan. Axiom allows one extra file-ingestion turn only when needed…");
     const contextResponse = await fetch("/api/projects/" + projectId + "/synthesize", { method: "POST" });
     const context = await contextResponse.json();
 
@@ -196,219 +200,77 @@ export function RepositoryConnectionPanel({
       )}
 
       {message && <p className={state === "error" ? "form-error" : "form-note"}>{message}</p>}
-      <ScanDataFlow
+      <SimpleDataFlow
         repositoryTree={repositoryTree}
-        treeCount={repositoryTree.length}
+        fileSizes={fileSizes}
         inspectedFiles={inspectedFiles}
         languageHints={languageHints}
         fastModel={fastModel}
         smartModel={activeSmartModel}
       />
-      <RepositoryFileTree paths={repositoryTree} />
       <p className="notice">If this is a new repository, use the client-discovery wizard below instead. You can connect code later to enrich the approved context.</p>
     </section>
   );
 }
 
-function ScanDataFlow({
+function SimpleDataFlow({
   repositoryTree,
-  treeCount,
+  fileSizes,
   inspectedFiles,
   languageHints,
   fastModel,
   smartModel,
 }: {
   repositoryTree: string[];
-  treeCount: number;
-  inspectedFiles: string[];
+  fileSizes: Record<string, number>;
+  inspectedFiles: InspectedFile[];
   languageHints: string[];
   fastModel: string;
   smartModel: string;
 }) {
-  const [activeTab, setActiveTab] = useState<"pipeline" | "fileRouting">("pipeline");
-
-  if (treeCount === 0) {
-    return null;
-  }
-
-  const uninspectedCount = Math.max(0, treeCount - inspectedFiles.length);
+  if (repositoryTree.length === 0) return null;
 
   return (
-    <section className="scan-flow-pipeline" aria-label="Multi-tier model context & data flow">
-      <div className="scan-flow-header">
-        <div>
-          <span className="eyebrow">ARCHITECTURE DATA PIPELINE</span>
-          <h3>Ingestion & Tiered Model Routing Flow</h3>
-        </div>
-        <div className="scan-flow-tabs">
-          <button
-            className={`tab-btn ${activeTab === "pipeline" ? "active" : ""}`}
-            onClick={() => setActiveTab("pipeline")}
-          >
-            Data Flow Pipeline
-          </button>
-          <button
-            className={`tab-btn ${activeTab === "fileRouting" ? "active" : ""}`}
-            onClick={() => setActiveTab("fileRouting")}
-          >
-            File Ingestion Matrix ({inspectedFiles.length} Ingested)
-          </button>
-        </div>
+    <div className="simple-flow-container">
+      <div className="simple-flow-box">
+        <h4>File Structure</h4>
+        {languageHints.length > 0 && <p className="flow-hint">Detected: {languageHints.join(", ")}</p>}
+        <RepositoryFileTree paths={repositoryTree} fileSizes={fileSizes} />
       </div>
-
-      {activeTab === "pipeline" ? (
-        <div className="pipeline-grid">
-          {/* Stage 1: Repository Scanner & File Breakdown */}
-          <div className="pipeline-stage stage-source">
-            <div className="stage-badge">1 · REPO SCANNER</div>
-            <h4>GitHub Codebase</h4>
-            <div className="stage-metric">
-              <span className="metric-number">{treeCount}</span>
-              <span className="metric-label">Files Mapped</span>
-            </div>
-
-            <div className="flow-split-box">
-              <div className="split-item content-read">
-                <span className="split-dot primary" />
-                <div>
-                  <strong>{inspectedFiles.length} Core Files</strong>
-                  <p>Full text content ingested</p>
-                </div>
-              </div>
-
-              <div className="split-item path-mapped">
-                <span className="split-dot secondary" />
-                <div>
-                  <strong>{uninspectedCount} Code Paths</strong>
-                  <p>Tree paths & signatures only</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="stage-footer">
-              Languages: {languageHints.length ? languageHints.join(", ") : "Detected automatically"}
-            </div>
-          </div>
-
-          {/* Connector Arrow 1 */}
-          <div className="pipeline-connector">
-            <div className="pulse-line" />
-            <span className="flow-arrow-icon">➔</span>
-          </div>
-
-          {/* Stage 2: Fast Model (gemini-3.1-flash-lite) */}
-          <div className="pipeline-stage stage-fast">
-            <div className="stage-badge fast-badge">FAST MODEL TIER</div>
-            <div className="model-name-tag">{fastModel}</div>
-            <p className="stage-desc">Structure & Schema Normalization</p>
-
-            <ul className="stage-tasks">
-              <li>📄 Ingests {uninspectedCount} file path strings</li>
-              <li>⚡ Normalizes directory taxonomy</li>
-              <li>🔍 Extracts language & signature hints</li>
-              <li>🔄 Performs routine validation steps</li>
-            </ul>
-
-            <div className="inter-model-transfer">
-              <span className="transfer-label">Transfers Metadata</span>
-              <span className="transfer-arrow">⬇ Streamed to Synthesis</span>
-            </div>
-          </div>
-
-          {/* Connector Arrow 2 */}
-          <div className="pipeline-connector">
-            <div className="pulse-line smart-pulse" />
-            <span className="flow-arrow-icon">➔</span>
-          </div>
-
-          {/* Stage 3: Smart Model (gemini-3.5-flash) */}
-          <div className="pipeline-stage stage-smart">
-            <div className="stage-badge smart-badge">SMART MODEL TIER</div>
-            <div className="model-name-tag smart">{smartModel}</div>
-            <p className="stage-desc">Architectural Reasoning & Synthesis</p>
-
-            <div className="smart-inputs">
-              <div className="input-pill">📂 {inspectedFiles.length} Selected File Contents</div>
-              <div className="input-pill">📝 Discovery Answers Brief</div>
-              <div className="input-pill transfer-pill">⚡ Fast Model Taxonomy Metadata</div>
-            </div>
-
-            <div className="stage-output">
-              <span className="output-badge">OUTPUT</span>
-              <strong>Axiom Draft Context Nodes</strong>
-              <p>Creates system summary, constraints & feature proposals</p>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className="file-routing-matrix">
-          <div className="routing-column">
-            <div className="routing-header smart-bg">
-              <h4>Ingested in Smart Model ({smartModel})</h4>
-              <p>Receives full file text along with client discovery brief for synthesis</p>
-            </div>
-            {inspectedFiles.length > 0 ? (
-              <ul className="file-matrix-list">
-                {inspectedFiles.map((path) => (
-                  <li key={path} className="file-matrix-item smart-item">
-                    <code>{path}</code>
-                    <span className="ingest-type">Full File Content</span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="no-files">No high-signal files selected yet.</p>
-            )}
-          </div>
-
-          <div className="routing-column">
-            <div className="routing-header fast-bg">
-              <h4>Ingested in Fast Model / Scanner ({fastModel})</h4>
-              <p>Receives structural path strings for rapid taxonomy and schema normalization</p>
-            </div>
-            <ul className="file-matrix-list">
-              <li className="file-matrix-item fast-item">
-                <code>Entire repository tree ({treeCount} paths)</code>
-                <span className="ingest-type">Path Structure & Hints</span>
-              </li>
-              {repositoryTree.filter((p) => !inspectedFiles.includes(p)).slice(0, 8).map((path) => (
-                <li key={path} className="file-matrix-item fast-item muted">
-                  <code>{path}</code>
-                  <span className="ingest-type">Path Only</span>
-                </li>
-              ))}
-              {treeCount - inspectedFiles.length > 8 && (
-                <li className="file-matrix-more">
-                  + {treeCount - inspectedFiles.length - 8} additional files mapped as structural paths
-                </li>
-              )}
-            </ul>
-          </div>
-        </div>
-      )}
-
-      <div className="scan-flow-footer">
-        <span className="info-icon">ℹ</span>
-        <span>
-          <strong>Data Flow Logic:</strong> Raw source code contents from high-signal files are sent strictly to <strong>{smartModel}</strong> during context synthesis. The file layout structure and routine extractions leverage <strong>{fastModel}</strong> to preserve quota while ensuring grounded synthesis.
-        </span>
+      <div className="simple-flow-box">
+        <h4>Smart Model ({smartModel})</h4>
+        <h5>Ingesting right now:</h5>
+        <ul>
+          <li>Project context (Discovery Answers Brief)</li>
+          <li>Folder structure ({repositoryTree.length} paths)</li>
+          <li>File contents ({inspectedFiles.length} files)</li>
+          {inspectedFiles.map((file) => <li className="ingested-file" key={file.path}><code>{file.path}</code> <span>{formatCharacters(file.charCount)}</span></li>)}
+          <li>May request up to 5 additional safe files once</li>
+        </ul>
       </div>
-    </section>
+      <div className="simple-flow-box">
+        <h4>Fast Model ({fastModel})</h4>
+        <h5>Initial evidence selector:</h5>
+        <ul>
+          <li>Receives {repositoryTree.length} paths and their byte sizes</li>
+          <li>Selects up to 8 files for Axiom to read</li>
+        </ul>
+      </div>
+    </div>
   );
 }
 
-function RepositoryFileTree({ paths }: { paths: string[] }) {
+function RepositoryFileTree({ paths, fileSizes }: { paths: string[]; fileSizes: Record<string, number> }) {
   if (paths.length === 0) {
     return null;
   }
 
-  const root = buildFileTree(paths.slice(0, 160));
+  const root = buildFileTree(paths.slice(0, 160), fileSizes);
   const remainingCount = Math.max(0, paths.length - 160);
 
   return (
     <div className="repository-tree">
       <div className="repository-tree-heading">
-        <h3>File structure</h3>
         <span>{paths.length} files scanned</span>
       </div>
       <ul>
@@ -425,10 +287,9 @@ function FileTreeItem({ node, depth }: { node: FileTreeNode; depth: number }) {
   return (
     <li>
       <div className="repository-tree-row" style={{ paddingLeft: depth * 14 }}>
-        <span aria-hidden="true" style={{ marginRight: '0.35rem' }}>
-          {isFolder ? <FolderIcon /> : <FileIcon />}
-        </span>
+        <span aria-hidden="true">{isFolder ? "▸" : "·"}</span>
         <code>{node.name}</code>
+        {!isFolder && node.size !== undefined && <small>{formatBytes(node.size)}</small>}
       </div>
       {isFolder && (
         <ul>
@@ -439,24 +300,7 @@ function FileTreeItem({ node, depth }: { node: FileTreeNode; depth: number }) {
   );
 }
 
-function FolderIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'rgba(255, 255, 255, 0.65)' }}>
-      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-    </svg>
-  );
-}
-
-function FileIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'rgba(255, 255, 255, 0.35)' }}>
-      <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
-      <polyline points="13 2 13 9 20 9"></polyline>
-    </svg>
-  );
-}
-
-function buildFileTree(paths: string[]) {
+function buildFileTree(paths: string[], fileSizes: Record<string, number>) {
   const root: FileTreeNode[] = [];
 
   for (const path of paths) {
@@ -469,7 +313,7 @@ function buildFileTree(paths: string[]) {
       let node = siblings.find((candidate) => candidate.name === part);
 
       if (!node) {
-        node = { name: part, path: currentPath, children: [] };
+        node = { name: part, path: currentPath, children: [], size: fileSizes[currentPath] };
         siblings.push(node);
         siblings.sort((a, b) => {
           const folderDelta = Number(b.children.length > 0) - Number(a.children.length > 0);
@@ -482,4 +326,13 @@ function buildFileTree(paths: string[]) {
   }
 
   return root;
+}
+
+function formatBytes(size: number) {
+  if (size < 1024) return size + " B";
+  return (size / 1024).toFixed(size < 10 * 1024 ? 1 : 0) + " KB";
+}
+
+function formatCharacters(count: number) {
+  return new Intl.NumberFormat("en").format(count) + " chars";
 }

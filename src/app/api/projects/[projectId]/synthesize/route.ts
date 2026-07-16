@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { synthesizeProjectContext } from "@/lib/ai/context-synthesis";
 import type { DiscoveryAnswers } from "@/lib/discovery";
+import { readRepositoryFiles, type AvailableRepository } from "@/lib/github/app";
 
 export async function POST(
   _request: NextRequest,
@@ -17,7 +18,7 @@ export async function POST(
 
   const { data: project } = await supabase
     .from("projects")
-    .select("id, name, spent_estimate_cents, budget_cap_cents")
+    .select("id, name, settings, spent_estimate_cents, budget_cap_cents")
     .eq("id", projectId)
     .single();
 
@@ -68,6 +69,12 @@ export async function POST(
         .filter((question) => question.status === "answered" && question.answer)
         .map((question) => ({ question: question.question, answer: question.answer as string })),
       repositoryEvidence: repositoryMap ? repositoryEvidenceFromContent(repositoryMap.content) : undefined,
+      loadAdditionalFiles: repositoryMap
+        ? async (paths) => {
+          const repository = repositoryFromProjectSettings(project.settings);
+          return repository ? readRepositoryFiles(repository, paths) : [];
+        }
+        : undefined,
     });
 
     if (result.type === "clarifications") {
@@ -160,7 +167,16 @@ export async function POST(
 
     await supabase.from("projects").update({ state: "context_draft" }).eq("id", projectId);
 
-    return Response.json({ type: "context" });
+    if (repositoryMap) {
+      const map = (repositoryMap.content ?? {}) as Record<string, unknown>;
+
+      await supabase.from("context_nodes").update({
+        content: { ...map, inspected_files: result.ingestedFiles },
+        updated_at: new Date().toISOString(),
+      }).eq("project_id", projectId).eq("kind", "repository_map").eq("source", "scanner").eq("status", "draft");
+    }
+
+    return Response.json({ type: "context", ingestedFileCount: result.ingestedFiles.length, additionallyIngestedFileCount: result.additionallyIngestedFiles.length });
   } catch (error) {
     console.error("Axiom context synthesis failed", error);
     if (isRateLimitError(error)) {
@@ -169,6 +185,31 @@ export async function POST(
 
     return Response.json({ error: "Gemini could not produce a valid context draft. Try again or refine the brief." }, { status: 502 });
   }
+}
+
+function repositoryFromProjectSettings(settings: unknown): AvailableRepository | null {
+  const github = (settings as { github?: unknown } | null)?.github as Record<string, unknown> | undefined;
+  if (!github
+    || typeof github.repository_id !== "number"
+    || typeof github.installation_id !== "number"
+    || typeof github.owner !== "string"
+    || typeof github.name !== "string"
+    || typeof github.full_name !== "string"
+    || typeof github.default_branch !== "string"
+    || typeof github.private !== "boolean") {
+    return null;
+  }
+
+  return {
+    id: github.repository_id,
+    installationId: github.installation_id,
+    owner: github.owner,
+    name: github.name,
+    fullName: github.full_name,
+    defaultBranch: github.default_branch,
+    private: github.private,
+    htmlUrl: "",
+  };
 }
 
 function isRateLimitError(error: unknown) {
@@ -182,6 +223,8 @@ function repositoryEvidenceFromContent(content: unknown) {
   const map = (content ?? {}) as Record<string, unknown>;
   const repository = (map.repository ?? {}) as Record<string, unknown>;
   const tree = Array.isArray(map.tree) ? map.tree.filter((path): path is string => typeof path === "string") : [];
+  const fileSizes = Object.fromEntries(Object.entries((map.file_sizes ?? {}) as Record<string, unknown>)
+    .flatMap(([path, size]) => typeof size === "number" ? [[path, size] as const] : []));
   const inspectedFiles = Array.isArray(map.inspected_files)
     ? map.inspected_files.flatMap((file) => {
       const item = file as Record<string, unknown>;
@@ -200,6 +243,7 @@ function repositoryEvidenceFromContent(content: unknown) {
       : [],
     scanTruncated: repository.scan_truncated === true,
     tree,
+    fileSizes,
     inspectedFiles,
   };
 }

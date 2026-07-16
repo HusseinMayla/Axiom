@@ -24,8 +24,12 @@ export function ContextApprovalPanel({
   features: Feature[];
 }) {
   const router = useRouter();
+  const approved = stage === "approved";
+  const visibleFeatures = approved
+    ? features.filter((feature) => feature.status === "active" || feature.status === "on_hold" || feature.status === "completed")
+    : features.filter((feature) => feature.status === "draft");
   const [selectedIds, setSelectedIds] = useState(() =>
-    features.filter((feature) => feature.status === "draft" || feature.status === "active").map((feature) => feature.id),
+    visibleFeatures.filter((feature) => feature.status === "draft").map((feature) => feature.id),
   );
   const [state, setState] = useState<"idle" | "saving" | "error">("idle");
   const [message, setMessage] = useState("");
@@ -33,8 +37,6 @@ export function ContextApprovalPanel({
   if (!draft || (stage !== "ready_for_review" && stage !== "approved")) {
     return null;
   }
-
-  const approved = stage === "approved";
 
   async function approveContext() {
     setState("saving");
@@ -54,7 +56,8 @@ export function ContextApprovalPanel({
     }
 
     setState("idle");
-    setMessage("Context approved. Selected features are now active.");
+    setMessage("Context approved. Selected features are active; Axiom is planning the first eligible feature.");
+    await fetch("/api/projects/" + projectId + "/plan-next", { method: "POST" });
     router.refresh();
   }
 
@@ -73,7 +76,7 @@ export function ContextApprovalPanel({
       </div>
 
       <div className="approval-feature-list">
-        {features.map((feature) => (
+        {visibleFeatures.map((feature) => (
           <label className={approved ? "approval-feature approved" : "approval-feature"} key={feature.id}>
             <input
               type="checkbox"

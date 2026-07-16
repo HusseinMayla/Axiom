@@ -83,6 +83,7 @@ export async function POST(
           scan_truncated: scan.truncated,
         },
         tree: scan.tree,
+        file_sizes: scan.fileSizes,
         inspected_files: scan.inspectedFiles,
       },
     });

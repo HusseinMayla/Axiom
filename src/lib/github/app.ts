@@ -47,6 +47,7 @@ export type RepositoryScan = {
   truncated: boolean;
   sourceFileCount: number;
   languageHints: string[];
+  fileSizes: Record<string, number>;
   inspectedFiles: Array<{ path: string; content: string }>;
 };
 
@@ -202,6 +203,17 @@ async function readRepositoryFile(repository: AvailableRepository, path: string,
   return content.slice(0, 15000);
 }
 
+export async function readRepositoryFiles(repository: AvailableRepository, paths: string[]) {
+  const safePaths = [...new Set(paths.filter(isSafePath))].slice(0, 5);
+  const token = await getInstallationToken(repository.installationId, repository.id);
+  const files = await Promise.all(safePaths.map(async (path) => ({
+    path,
+    content: await readRepositoryFile(repository, path, token),
+  })));
+
+  return files.filter((file) => file.content.length > 0);
+}
+
 export async function scanRepository(repository: AvailableRepository): Promise<RepositoryScan> {
   const token = await getInstallationToken(repository.installationId, repository.id);
   let tree: GithubTreeResponse;
@@ -219,6 +231,7 @@ export async function scanRepository(repository: AvailableRepository): Promise<R
         truncated: false,
         sourceFileCount: 0,
         languageHints: [],
+        fileSizes: {},
         inspectedFiles: [],
       };
     }
@@ -226,10 +239,10 @@ export async function scanRepository(repository: AvailableRepository): Promise<R
     throw error;
   }
 
-  const files = tree.tree
+  const fileEntries = tree.tree
     .filter((entry) => entry.type === "blob" && isSafePath(entry.path))
-    .map((entry) => entry.path)
-    .sort();
+    .sort((a, b) => a.path.localeCompare(b.path));
+  const files = fileEntries.map((entry) => entry.path);
 
   const sourceFiles = files.filter((path) => SOURCE_EXTENSIONS.has(extension(path)));
   const initialFiles = pickInitialFiles(files);
@@ -244,6 +257,7 @@ export async function scanRepository(repository: AvailableRepository): Promise<R
     truncated: tree.truncated,
     sourceFileCount: sourceFiles.length,
     languageHints: [...new Set(sourceFiles.map(extension))].sort(),
+    fileSizes: Object.fromEntries(fileEntries.slice(0, 750).map((entry) => [entry.path, entry.size ?? 0])),
     inspectedFiles: inspectedFiles.filter((file) => file.content.length > 0),
   };
 }

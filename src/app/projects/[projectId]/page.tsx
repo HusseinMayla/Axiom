@@ -3,6 +3,7 @@ import { ContextApprovalPanel } from "@/components/context-approval-panel";
 import { ContextSynthesisPanel } from "@/components/context-synthesis-panel";
 import { DiscoveryWizard } from "@/components/discovery-wizard";
 import { RepositoryConnectionPanel } from "@/components/repository-connection-panel";
+import { TaskPlanningPanel } from "@/components/task-planning-panel";
 import { contextDraftSchema } from "@/lib/ai/context-synthesis";
 import { getGeminiModel } from "@/lib/ai/gemini";
 import type { DiscoveryAnswers } from "@/lib/discovery";
@@ -23,7 +24,7 @@ export default async function ProjectPage({
 
   const { data: project } = await supabase
     .from("projects")
-    .select("id, name, repository_state, repository_url, settings")
+    .select("id, name, state, repository_state, repository_url, settings")
     .eq("id", projectId)
     .single();
 
@@ -78,6 +79,13 @@ export default async function ProjectPage({
     .eq("kind", "feature")
     .in("status", ["draft", "approved"]);
 
+  const { data: tasks } = await supabase
+    .from("tasks")
+    .select("id, state, objective, human_summary, human_actions, human_actions_completed_at, feature_id, features(name)")
+    .eq("project_id", projectId)
+    .in("state", ["waiting_for_approval", "approved", "pending_review", "running"])
+    .order("created_at", { ascending: false });
+
   const rootContent = (contextNode?.content ?? {}) as Record<string, unknown>;
   const repositoryContent = (repositoryMap?.content ?? {}) as Record<string, unknown>;
   const repositoryTree = Array.isArray(repositoryContent.tree)
@@ -86,9 +94,13 @@ export default async function ProjectPage({
   const inspectedFiles = Array.isArray(repositoryContent.inspected_files)
     ? repositoryContent.inspected_files.flatMap((file) => {
       const candidate = file as Record<string, unknown>;
-      return typeof candidate.path === "string" ? [candidate.path] : [];
+      return typeof candidate.path === "string" && typeof candidate.content === "string"
+        ? [{ path: candidate.path, charCount: candidate.content.length }]
+        : [];
     })
     : [];
+  const fileSizes = Object.fromEntries(Object.entries((repositoryContent.file_sizes ?? {}) as Record<string, unknown>)
+    .flatMap(([path, size]) => typeof size === "number" ? [[path, size] as const] : []));
   const repositoryMetadata = (repositoryContent.repository ?? {}) as Record<string, unknown>;
   const languageHints = Array.isArray(repositoryMetadata.language_hints)
     ? repositoryMetadata.language_hints.filter((hint): hint is string => typeof hint === "string")
@@ -120,6 +132,7 @@ export default async function ProjectPage({
         repositoryUrl={project.repository_url}
         repositoryName={repositoryName}
         repositoryTree={repositoryTree}
+        fileSizes={fileSizes}
         inspectedFiles={inspectedFiles}
         languageHints={languageHints}
         fastModel={getGeminiModel("fast")}
@@ -140,11 +153,24 @@ export default async function ProjectPage({
         draft={draftResult.success ? draftResult.data : null}
       />
       <ContextApprovalPanel
+        key={(features ?? []).filter((feature) => feature.status === "draft").map((feature) => feature.id).join("|")}
         projectId={project.id}
         stage={discovery?.stage ?? "draft"}
         draft={draftResult.success ? draftResult.data : null}
         features={(features ?? []) as Array<{ id: string; name: string; description: string; priority: number; status: "draft" | "active" | "needs_clarification" | "on_hold" | "completed" }>}
       />
+      {project.state === "active" && <TaskPlanningPanel
+        projectId={project.id}
+        tasks={(tasks ?? []).map((task) => ({
+          id: task.id,
+          state: task.state,
+          objective: task.objective,
+          humanSummary: task.human_summary,
+          humanActions: Array.isArray(task.human_actions) ? task.human_actions as Array<{ action: string; optional: boolean }> : [],
+          humanActionsCompletedAt: task.human_actions_completed_at,
+          featureName: (task.features as { name?: string } | null)?.name ?? "Active feature",
+        }))}
+      />}
     </main>
   );
 }
