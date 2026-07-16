@@ -43,13 +43,12 @@ export function NewProjectForm() {
         required
       />
       <p className="field-hint">
-        This starts an empty-project discovery. Repository connection arrives after the wizard path is complete.
+        After creating the project, connect an existing GitHub repository or complete the discovery wizard for a new one.
       </p>
       <button className="button" disabled={state === "saving"}>
-        {state === "saving" ? "Creating project…" : "Start discovery"}
+        {state === "saving" ? "Creating project…" : "Create project"}
       </button>
       {state === "error" && <p className="form-error">{error}</p>}
     </form>
   );
 }
-

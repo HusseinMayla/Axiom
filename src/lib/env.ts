@@ -27,8 +27,21 @@ export function getGeminiEnv() {
 
   return {
     apiKey,
-    fastModel: process.env.GEMINI_MODEL_FAST ?? "gemini-3.1-flash-lite",
-    smartModel: process.env.GEMINI_MODEL_SMART ?? "gemini-3.5-flash",
+    fastModel: hasValue(process.env.GEMINI_MODEL_FAST) ? process.env.GEMINI_MODEL_FAST! : "gemini-3.1-flash-lite",
+    smartModel: hasValue(process.env.GEMINI_MODEL_SMART)
+      ? process.env.GEMINI_MODEL_SMART!
+      : (hasValue(process.env.GEMINI_MODEL_FAST) ? process.env.GEMINI_MODEL_FAST! : "gemini-3.1-flash-lite"),
   };
 }
 
+export function getGithubAppEnv() {
+  const appId = process.env.GITHUB_APP_ID;
+  const slug = process.env.GITHUB_APP_SLUG;
+  const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
+
+  if (!appId || !slug || !privateKey) {
+    throw new Error("GitHub App is not configured. Add GITHUB_APP_ID, GITHUB_APP_SLUG, and GITHUB_APP_PRIVATE_KEY to .env.local.");
+  }
+
+  return { appId, slug, privateKey: privateKey.replace(/\\n/g, "\n") };
+}

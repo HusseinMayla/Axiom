@@ -16,8 +16,8 @@ export default async function NewProjectPage() {
       <Link className="back-link" href="/projects">← Projects</Link>
       <section className="hero compact-hero">
         <p className="eyebrow">NEW PROJECT</p>
-        <h1>Begin with a client brief.</h1>
-        <p className="lede">We will ask focused questions, then build context Axiom can use for every future task.</p>
+        <h1>Start from code or a client brief.</h1>
+        <p className="lede">Connect an existing repository for a grounded scan, or use focused client questions to define a new build.</p>
       </section>
       <section className="panel">
         <NewProjectForm />
@@ -25,4 +25,3 @@ export default async function NewProjectPage() {
     </main>
   );
 }
-
