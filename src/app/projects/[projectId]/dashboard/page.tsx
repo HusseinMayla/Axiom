@@ -19,7 +19,7 @@ export default async function ProjectDashboardPage({
 
   const { data: project } = await supabase
     .from("projects")
-    .select("id, name, repository_state, state, settings, automation_state")
+    .select("id, name, repository_url, repository_state, state, settings, automation_state")
     .eq("id", projectId)
     .single();
 
@@ -50,7 +50,7 @@ export default async function ProjectDashboardPage({
 
   return (
     <div className="project-workspace">
-      <ProjectNavigation projectId={project.id} projectName={project.name} projects={projects ?? []} automationState={project.automation_state as "running" | "frozen" | null} attentionCount={attentionCount} />
+      <ProjectNavigation projectId={project.id} projectName={project.name} repositoryUrl={project.repository_url} projects={projects ?? []} automationState={project.automation_state as "running" | "frozen" | null} attentionCount={attentionCount} />
       <main className="workspace-main dashboard-main">
         <div className="workspace-page-heading dashboard-page-heading">
           <div>

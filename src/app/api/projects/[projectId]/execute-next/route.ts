@@ -15,7 +15,7 @@ import { z } from "zod";
 export const runtime = "nodejs";
 
 const BRANCH_BLOCKING_STATES = ["running", "pending_review", "waiting_for_human_approval"];
-const MAX_AGENT_STEPS = 30;
+const DEFAULT_MAX_AGENT_STEPS = 30;
 
 type TaskRecord = {
   id: string;
@@ -51,6 +51,8 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
 
   const repository = repositoryFromProjectSettings(project.settings);
   if (!repository) return Response.json({ error: "Connect a GitHub repository before running a task." }, { status: 409 });
+  const developerSettings = developerSettingsFromProject(project.settings);
+  const maxAgentSteps = developerSettings.maxSteps;
 
   const { data: blockingTask } = await supabase
     .from("tasks")
@@ -161,12 +163,12 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
     let execution: DeveloperReport | null = null;
     let invalidToolResponses = 0;
 
-    for (let step = 1; step <= MAX_AGENT_STEPS; step += 1) {
+    for (let step = 1; step <= maxAgentSteps; step += 1) {
       assertRunActive(activeRun);
       const stepStartMs = Date.now();
       const currentWorkspaceTree = await readWorkspaceTree(activeSession);
       const decisionStartMs = Date.now();
-      const decision = await requestDeveloperToolCalls(conversation, step, MAX_AGENT_STEPS, currentWorkspaceTree, activeRun.controller.signal);
+      const decision = await requestDeveloperToolCalls(conversation, step, maxAgentSteps, currentWorkspaceTree, activeRun.controller.signal, developerSettings.model);
       assertRunActive(activeRun);
       const thinkingMs = Date.now() - decisionStartMs;
 
@@ -176,7 +178,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
       const inspectCalls = calls.filter((call): call is Extract<AgentToolCall, { name: "inspect_files" }> => call.name === "inspect_files");
       if (calls.length === 0 || (calls.length > 1 && !isReadOnlyBatch)) {
         // On the final step, if the agent fails to produce a valid call, force a synthetic finish
-        if (step === MAX_AGENT_STEPS) {
+        if (step === maxAgentSteps) {
           execution = {
             summary: "Agent reached step limit. Auto-finishing with whatever work was completed.",
             changes_made: decision.text.slice(0, 2000) || "Agent did not produce a structured report.",
@@ -289,32 +291,32 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
     // If the agent never called finish_task, auto-generate a synthetic report from whatever work was done
     if (!execution) {
       execution = {
-        summary: "Agent exhausted its " + MAX_AGENT_STEPS + "-step budget without calling finish_task. Auto-finishing with whatever workspace changes exist.",
+        summary: "Agent exhausted its " + maxAgentSteps + "-step budget without calling finish_task. Auto-finishing with whatever workspace changes exist.",
         changes_made: "See workspace diff for actual changes made by the agent.",
       } as unknown as DeveloperReport;
-      executionLogs.push({ attempt: MAX_AGENT_STEPS, command: "agent.auto_finish", exit_code: 0, output: "Harness auto-finished after step limit." });
-      await persistExecutionProgress(supabase, typedTask.id, MAX_AGENT_STEPS, executionLogs);
-      await recordExecutionEvent(supabase, projectId, typedTask.id, MAX_AGENT_STEPS, "auto_finish", {}, { report: execution }, "completed");
+      executionLogs.push({ attempt: maxAgentSteps, command: "agent.auto_finish", exit_code: 0, output: "Harness auto-finished after step limit." });
+      await persistExecutionProgress(supabase, typedTask.id, maxAgentSteps, executionLogs);
+      await recordExecutionEvent(supabase, projectId, typedTask.id, maxAgentSteps, "auto_finish", {}, { report: execution }, "completed");
     }
 
     // A final deterministic validation prevents an agent from accidentally finishing on stale evidence.
     const dependencyRefresh = await prepareWorkspaceDependencies(session, true);
     assertRunActive(activeRun);
-    if (dependencyRefresh) appendValidationLogs(executionLogs, MAX_AGENT_STEPS + 1, [dependencyRefresh]);
+    if (dependencyRefresh) appendValidationLogs(executionLogs, maxAgentSteps + 1, [dependencyRefresh]);
     const validationPlan = dependencyRefresh?.exitCode === 0 || !dependencyRefresh
       ? await resolveValidationPlan(session, validationCommands)
       : { commands: validationCommands, note: null };
-    if (validationPlan.note) executionLogs.push({ attempt: MAX_AGENT_STEPS + 1, command: "orchestrator.validation_plan", exit_code: 0, output: validationPlan.note });
+    if (validationPlan.note) executionLogs.push({ attempt: maxAgentSteps + 1, command: "orchestrator.validation_plan", exit_code: 0, output: validationPlan.note });
     const validations = dependencyRefresh?.exitCode === 0 || !dependencyRefresh
       ? await runValidations(session, validationPlan.commands)
       : [dependencyRefresh];
-    appendValidationLogs(executionLogs, MAX_AGENT_STEPS + 1, validations);
+    appendValidationLogs(executionLogs, maxAgentSteps + 1, validations);
     const validationPassed = validations.every((result) => result.exitCode === 0);
     await recordExecutionEvent(
       supabase,
       projectId,
       typedTask.id,
-      MAX_AGENT_STEPS + 1,
+      maxAgentSteps + 1,
       "final_validation",
       { commands: validationPlan.commands },
       { results: validations },
@@ -338,14 +340,16 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
       const feedback = !validationPassed
         ? "Deterministic validation failed. Fix the recorded command failure before retrying."
         : "The agent produced no changed files, so there is no implementation to review.";
+      const { data: currentProject } = await supabase.from("projects").select("automation_state").eq("id", projectId).maybeSingle();
+      const retainForHuman = trigger === "human" || currentProject?.automation_state === "frozen";
       await finishTask(supabase, typedTask.id, {
-        state: "approved",
+        state: retainForHuman ? "failed" : "approved",
         branch_name: null,
         base_sha: null,
         head_sha: null,
         developer_report: report,
         execution_logs: executionLogs,
-        review_feedback: feedback,
+        review_feedback: retainForHuman ? feedback + " Automatic flow is frozen, so this task remains in Active task until you return it to the queue or remove it." : feedback,
       });
       await setCurrentStatus({
         supabase,
@@ -355,7 +359,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
         remainingWork: [feedback],
         latestReport: report.dashboard_summary || report.summary,
       });
-      return Response.json({ type: "retry", taskId: typedTask.id, message: feedback });
+      return Response.json({ type: retainForHuman ? "failed" : "retry", taskId: typedTask.id, message: feedback });
     }
 
     await assertTaskNotArchived(supabase, typedTask.id);
@@ -613,4 +617,14 @@ function repositoryFromProjectSettings(settings: unknown): AvailableRepository |
     private: github.private,
     htmlUrl: "",
   };
+}
+
+function developerSettingsFromProject(settings: unknown) {
+  const developer = (settings as { developer?: unknown } | null)?.developer as Record<string, unknown> | undefined;
+  const configuredSteps = developer?.max_steps;
+  const maxSteps = configuredSteps === 60 || configuredSteps === 90 || configuredSteps === 30 ? configuredSteps : DEFAULT_MAX_AGENT_STEPS;
+  const model = developer?.model === "gemini-3.5-flash" || developer?.model === "gemini-3.1-flash-lite"
+    ? developer.model
+    : undefined;
+  return { maxSteps, model };
 }

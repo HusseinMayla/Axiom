@@ -80,6 +80,7 @@ export async function POST(
         .filter((question) => question.status === "answered" && question.answer)
         .map((question) => ({ question: question.question, answer: question.answer as string })),
       humanFeedback: body.data.feedback,
+      model: engineerModelFromSettings(project.settings),
       repositoryEvidence: repositoryMap ? repositoryEvidenceFromContent(repositoryMap.content) : undefined,
       loadAdditionalFiles: repositoryMap
         ? async (paths) => {
@@ -212,6 +213,11 @@ export async function POST(
 
     return Response.json({ error: "Gemini could not produce a valid context draft. Try again or refine the brief." }, { status: 502 });
   }
+}
+
+function engineerModelFromSettings(settings: unknown) {
+  const model = (settings as { engineer?: { model?: unknown } } | null)?.engineer?.model;
+  return model === "gemini-3.1-flash-lite" || model === "gemini-3.5-flash" ? model : undefined;
 }
 
 function repositoryFromProjectSettings(settings: unknown): AvailableRepository | null {

@@ -42,7 +42,7 @@ export async function PATCH(
     update.head_sha = null;
     update.execution_finished_at = new Date().toISOString();
     update.review_feedback = task.state === "running"
-      ? "Execution was reset by a human after the worker stopped unexpectedly."
+      ? "Execution was cancelled by a human. The task is retained here and can be returned to the queue."
       : task.state === "failed" ? "A human acknowledged the failed automation run and returned it to the queue." : "Validation-failed execution was reset by a human for a clean retry.";
     if (task.state === "failed") {
       update.automation_attempt_count = 0;

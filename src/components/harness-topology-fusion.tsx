@@ -48,14 +48,10 @@ export function HarnessTopologyFusion({
   openClarifications = 0,
   activeTask = null,
   automationState = "running",
-  showSimulationControls = true,
+  showSimulationControls = false,
 }: HarnessTopologyFusionProps) {
   const [selectedNode, setSelectedNode] = useState<NodeId | null>("engineer");
-  const [simulatedState, setSimulatedState] = useState<"running" | "waiting_approval" | "validated">(
-    openClarifications > 0 || activeTask?.state === "waiting_for_human_approval"
-      ? "waiting_approval"
-      : "running"
-  );
+  const simulatedState = openClarifications > 0 || activeTask?.state === "waiting_for_human_approval" ? "waiting_approval" : "running";
   const [selectedPacket, setSelectedPacket] = useState<PacketLog | null>(null);
   const [hoveredPacketId, setHoveredPacketId] = useState<string | null>(null);
   const [mounted, setMounted] = useState<boolean>(false);
@@ -70,8 +66,10 @@ export function HarnessTopologyFusion({
   });
 
   // Dynamic Developer AI Worker Activity Text & Progress
-  const [developerActivity, setDeveloperActivity] = useState<string>("Analyzing AST syntax tree...");
-  const [developerProgress, setDeveloperProgress] = useState<number>(45);
+  const [developerActivity, setDeveloperActivity] = useState<string>("Waiting for a live developer event.");
+  const [developerProgress, setDeveloperProgress] = useState<number>(0);
+  const [modelLabels, setModelLabels] = useState({ developer: "Gemini 3.1 Flash-Lite", engineer: "Gemini 3.1 Flash-Lite" });
+  const [repositoryTree, setRepositoryTree] = useState<string[]>([]);
 
   // Dynamic DOM Refs for precise SVG Path Calculation
   const containerRef = useRef<HTMLDivElement>(null);
@@ -105,24 +103,6 @@ export function HarnessTopologyFusion({
   const animationQueue = useRef<QueuedItem[]>([]);
   const isProcessingQueue = useRef<boolean>(false);
 
-  // Cycle Developer Activity Live Loading Text
-  useEffect(() => {
-    if (!mounted) return;
-    const activities = [
-      "⚡ Analyzing AST syntax tree...",
-      "✏️ Editing src/routes.ts (+34 lines)",
-      "🔍 Resolving import dependencies...",
-      "🧪 Running Vitest verification suite...",
-      "✅ Syntax check & AST diff verified",
-    ];
-    let idx = 0;
-    const interval = setInterval(() => {
-      idx = (idx + 1) % activities.length;
-      setDeveloperActivity(activities[idx]);
-      setDeveloperProgress((prev) => (prev >= 90 ? 25 : prev + 20));
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [mounted]);
 
   // Dynamic calculation of start/end points using getBoundingClientRect
   const updatePaths = useCallback(() => {
@@ -204,28 +184,7 @@ export function HarnessTopologyFusion({
   };
 
   // Fixed initial timestamps for SSR
-  const [packetLogs, setPacketLogs] = useState<PacketLog[]>([
-    {
-      id: "pkt-101-init",
-      timestamp: "12:00:01.000",
-      source: "Human_UI (10.0.0.1:443)",
-      destination: "Engineer_AI (10.0.0.2:8080)",
-      protocol: "HTTP/2",
-      type: "TASK_PROPOSAL",
-      status: "OK",
-      payload: `{\n  "taskId": "${activeTask ? activeTask.objective : "task-402"}",\n  "intent": "Harness execution pipeline",\n  "priority": "HIGH"\n}`,
-    },
-    {
-      id: "pkt-102-init",
-      timestamp: "12:00:02.000",
-      source: "Engineer_AI (10.0.0.2:8080)",
-      destination: "Context_Engine (10.0.0.3:50051)",
-      protocol: "IPC",
-      type: "CONTEXT_QUERY",
-      status: "OK",
-      payload: `{\n  "hasContext": ${hasContext},\n  "matchedFiles": 48\n}`,
-    },
-  ]);
+  const [packetLogs, setPacketLogs] = useState<PacketLog[]>([]);
 
   // Synchronized FIFO Queue Processor using direct path strings
   const processNextInQueue = useCallback(() => {
@@ -355,6 +314,10 @@ export function HarnessTopologyFusion({
 
         if (execRes.ok) {
           const execData = await execRes.json();
+          const models = execData.models as { developer?: string; engineer?: string } | undefined;
+          if (Array.isArray(execData.repositoryTree)) setRepositoryTree(execData.repositoryTree.filter((path: unknown): path is string => typeof path === "string"));
+          if (models) setModelLabels({ developer: models.developer === "gemini-3.5-flash" ? "Gemini 3.5 Flash" : "Gemini 3.1 Flash-Lite", engineer: models.engineer === "gemini-3.5-flash" ? "Gemini 3.5 Flash" : "Gemini 3.1 Flash-Lite" });
+          setAgentStatuses((previous) => ({ ...previous, developer: execData.active ? "working" : "idle", engineer: execData.active ? "working" : openClarifications > 0 ? "waiting" : "idle" }));
           const execEvents = (execData.taskRun?.events as { id: string; step: number; tool_name: string; tool_args: unknown; status: string; finished_at: string }[]) ?? [];
 
           for (const ev of execEvents) {
@@ -372,6 +335,8 @@ export function HarnessTopologyFusion({
                 payload: JSON.stringify({ step: ev.step, tool: ev.tool_name, args: ev.tool_args }, null, 2),
               };
               itemsToSpawn.push({ packet: pkt, pathKey: "developerToValidator", color: "#00ffcc" });
+              setDeveloperActivity(`${ev.tool_name.replaceAll("_", " ")} · step ${ev.step}`);
+              setDeveloperProgress(Math.min(100, Math.round((ev.step / Math.max(execData.taskRun?.maxSteps ?? 1, 1)) * 100)));
             }
           }
         }
@@ -486,7 +451,6 @@ export function HarnessTopologyFusion({
       typeStr = "CLARIFICATION_GATE";
       src = "Engineer_AI (10.0.0.2:8080)";
       dst = "Human_UI (10.0.0.1:443)";
-      setSimulatedState("waiting_approval");
     }
 
     const pktId = makeUniquePktId(`pkt-${target.toLowerCase()}`);
@@ -721,9 +685,10 @@ export function HarnessTopologyFusion({
                 </h4>
                 <p className="mt-0.5 text-xs text-slate-400">Indexed brief & rules base</p>
                 <div className="mt-3 flex items-center justify-between text-[11px] text-cyan-300 bg-cyan-950/60 border border-cyan-800/40 rounded px-2.5 py-1">
-                  <span>gRPC (50051)</span>
-                  <span className="font-bold shrink-0 ml-1">{hasContext ? "48 FILES" : "NO CONTEXT"}</span>
+                  <span>Scanned repository</span>
+                  <span className="font-bold shrink-0 ml-1">{repositoryTree.length ? `${repositoryTree.length} FILES` : hasContext ? "PENDING" : "NO CONTEXT"}</span>
                 </div>
+                {repositoryTree.length > 0 ? <p className="mt-2 max-h-12 overflow-auto text-[9px] leading-4 text-slate-500">{repositoryTree.slice(0, 6).join(" · ")}</p> : null}
               </div>
             </div>
 
@@ -734,7 +699,7 @@ export function HarnessTopologyFusion({
                 className={`group cursor-pointer rounded-xl border-2 p-4 backdrop-blur-md transition-all duration-300 ${
                   selectedNode === "engineer"
                     ? "border-blue-400 bg-slate-900/95 shadow-[0_0_25px_rgba(59,130,246,0.35)]"
-                    : "border-blue-600/60 bg-slate-900/90 hover:border-blue-500"
+                    : agentStatuses.engineer === "idle" ? "border-slate-700 bg-slate-900/55 opacity-70" : "border-blue-600/60 bg-slate-900/90 hover:border-blue-500"
                 }`}
               >
                 <div className="flex items-center justify-between text-[10px]">
@@ -747,7 +712,7 @@ export function HarnessTopologyFusion({
                     {agentStatuses.engineer}
                   </span>
                 </h4>
-                <p className="mt-0.5 text-xs text-slate-300">Gemini 3.1 Pro Coordinator</p>
+                <p className="mt-0.5 text-xs text-slate-300">{modelLabels.engineer}</p>
                 <div className="mt-3 flex items-center justify-between text-[11px] text-blue-200 bg-blue-950/70 border border-blue-800/50 rounded px-2.5 py-1">
                   <span>LISTEN: port 8080</span>
                   <span className={`font-bold shrink-0 ml-1 ${automationState === "frozen" ? "text-amber-400" : "text-emerald-400"}`}>
@@ -805,15 +770,6 @@ export function HarnessTopologyFusion({
               </span>
             </div>
 
-            {/* Cisco Ingress & Egress Port Badges Mounted on Container Edge */}
-            <div className="absolute -top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-4 pointer-events-none">
-              <span className="rounded bg-emerald-950/90 px-2.5 py-0.5 text-[9px] font-bold text-emerald-300 border border-emerald-500/50 shadow-md font-mono">
-                [INGRESS PORT: eth0 ➔ 172.17.0.2]
-              </span>
-              <span className="rounded bg-teal-950/90 px-2.5 py-0.5 text-[9px] font-bold text-teal-300 border border-teal-500/50 shadow-md font-mono">
-                [EGRESS PORT: eth1 ➔ 10.0.0.2]
-              </span>
-            </div>
 
             {/* Nodes inside Docker Container */}
             <div className="grid grid-cols-12 gap-6 items-center relative z-20 pt-3">
@@ -825,7 +781,7 @@ export function HarnessTopologyFusion({
                   className={`group cursor-pointer rounded-xl border p-4 backdrop-blur-md transition-all duration-300 ${
                     selectedNode === "developer"
                       ? "border-emerald-400 bg-slate-900/95 shadow-[0_0_20px_rgba(16,185,129,0.35)]"
-                      : "border-emerald-900/60 bg-slate-900/90 hover:border-emerald-700"
+                      : agentStatuses.developer === "idle" ? "border-slate-700 bg-slate-900/55 opacity-70" : "border-emerald-900/60 bg-slate-900/90 hover:border-emerald-700"
                   }`}
                 >
                   <div className="flex items-center justify-between text-[10px]">
@@ -835,11 +791,12 @@ export function HarnessTopologyFusion({
 
                   <div className="mt-1 flex items-center justify-between">
                     <h4 className="font-sans text-base font-bold text-slate-100">Developer (AI Worker)</h4>
-                    <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-[9px] font-bold text-emerald-300 border border-emerald-500/40 uppercase animate-pulse flex items-center gap-1">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-ping" />
-                      WORKING
+                    <span className={`rounded px-2 py-0.5 text-[9px] font-bold border uppercase flex items-center gap-1 ${agentStatuses.developer === "working" ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40 animate-pulse" : "bg-slate-700/40 text-slate-400 border-slate-600"}`}>
+                      {agentStatuses.developer === "working" ? <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-ping" /> : null}
+                      {agentStatuses.developer}
                     </span>
                   </div>
+                  <p className="mt-1 text-[10px] text-emerald-300">{modelLabels.developer}</p>
 
                   {/* DYNAMIC LIVE ACTIVITY HUD (Loading animation for editing/analyzing) */}
                   <div className="mt-3 space-y-2 rounded-lg bg-slate-950 p-2.5 border border-emerald-900/50">
@@ -861,12 +818,7 @@ export function HarnessTopologyFusion({
                 </div>
               </div>
 
-              {/* Cisco Connector Label */}
-              <div className="col-span-2 text-center relative z-30">
-                <div className="inline-block rounded-md bg-emerald-950/90 backdrop-blur-md border border-emerald-500/50 px-2.5 py-1 text-[10px] text-emerald-300 font-bold shadow-lg font-mono">
-                  [UDP] STREAM_DIFF ➔
-                </div>
-              </div>
+              <div className="col-span-2" aria-hidden="true" />
 
               {/* Validate Checker AI (QA Sentinel) */}
               <div ref={valRef} className="col-span-5 col-start-8">

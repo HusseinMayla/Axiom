@@ -28,7 +28,7 @@ type Task = {
 };
 
 type ExecutionLog = { attempt: number; command: string; exit_code: number; output: string };
-type ExecutionEvent = { id: string; step: number; tool_name: string; tool_args: unknown; tool_result: unknown; status: "completed" | "failed"; created_at: string; finished_at?: string };
+type ExecutionEvent = { id: string; step: number; tool_name: string; tool_args: unknown; tool_result: unknown; status: "running" | "completed" | "failed"; created_at: string; finished_at?: string };
 
 type DeveloperReport = {
   summary: string;
@@ -295,7 +295,7 @@ function TaskCard({ task, projectId, onChange, forceLive = false }: { task: Task
       <p className="eyebrow">{task.category} · priority {task.priority} · {task.state.replaceAll("_", " ")}</p>
       <h4>{task.category === "general" ? "Project-wide" : task.featureName}: {task.objective}</h4>
       <p>{task.humanSummary}</p>
-      {(task.state === "running" || forceLive) && projectId && <AgentActivity projectId={projectId} taskId={task.id} initialLogs={task.executionLogs ?? []} />}
+      {(["running", "pending_review", "waiting_for_human_approval", "failed"].includes(task.state) || forceLive) && projectId && <AgentActivity projectId={projectId} taskId={task.id} initialLogs={task.executionLogs ?? []} />}
       {task.humanActions.length > 0 && (
         <details className="use-case-details" open={!task.humanActionsCompletedAt} style={{ marginTop: "1rem" }}>
           <summary style={{ fontWeight: 600, cursor: "pointer" }}>
@@ -391,10 +391,11 @@ function TaskCard({ task, projectId, onChange, forceLive = false }: { task: Task
 }
 
 function AgentActivity({ projectId, taskId, initialLogs }: { projectId: string; taskId: string; initialLogs: ExecutionLog[] }) {
+  const fallbackEvents: ExecutionEvent[] = initialLogs.map((log, index) => ({ id: "fallback-" + index, step: log.attempt, tool_name: log.command, tool_args: {}, tool_result: { output: log.output }, status: log.exit_code === 0 ? "completed" : "failed", created_at: "" }));
   const [activity, setActivity] = useState<{ state: string; step: number; events: ExecutionEvent[] }>({
     state: "starting",
     step: 0,
-    events: initialLogs.map((log, index) => ({ id: String(index), step: log.attempt, tool_name: log.command, tool_args: {}, tool_result: { output: log.output }, status: log.exit_code === 0 ? "completed" : "failed", created_at: "" })),
+    events: fallbackEvents,
   });
 
   useEffect(() => {
@@ -406,24 +407,24 @@ function AgentActivity({ projectId, taskId, initialLogs }: { projectId: string; 
         if (!response.ok) throw new Error("Activity unavailable");
         const payload = await response.json() as { state: string; step: number; events: ExecutionEvent[] };
         if (cancelled) return;
-        setActivity({ state: payload.state, step: payload.step, events: payload.events ?? [] });
-        if (payload.state === "running" || payload.state === "approved") timer = setTimeout(poll, 1_500);
+        setActivity({ state: payload.state, step: payload.step, events: payload.events?.length ? payload.events : fallbackEvents });
+        if (["running", "approved", "pending_review"].includes(payload.state)) timer = setTimeout(poll, 1_500);
       } catch {
         if (!cancelled) timer = setTimeout(poll, 3_000);
       }
     };
     void poll();
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [projectId, taskId]);
+  }, [projectId, taskId, initialLogs]);
 
   return <section className="agent-activity" aria-live="polite">
-    <div><span className="eyebrow">LIVE AGENT ACTIVITY</span><strong>{activity.state.replaceAll("_", " ")} · {activity.step > 30 ? "final validation" : `step ${activity.step}/30`}</strong></div>
+    <div><span className="eyebrow">FULL EXECUTION TERMINAL</span><strong>{activity.state.replaceAll("_", " ")} · {activity.step > 30 ? "final validation / AI review" : `step ${activity.step}/30`}</strong></div>
     {activity.events.length === 0 ? <p>Starting isolated workspace…</p> : <ol>
       {activity.events.map((entry) => {
         const summary = formatAgentStepSummary(entry.step, entry.tool_name, entry.tool_args, entry.tool_result, entry.created_at, entry.finished_at);
         return (
-          <li key={entry.id} className={entry.status === "completed" ? "" : "failed"}>
-            <code>{summary.turnLabel} · {summary.thinkingText}, {summary.actionText}</code>
+          <li key={entry.id} className={entry.status === "failed" ? "failed" : ""}>
+            <code>{entry.created_at ? new Date(entry.created_at).toLocaleTimeString() + " · " : ""}{summary.turnLabel} · {entry.tool_name} · {summary.thinkingText}, {summary.actionText}</code>
             <span>{entry.status}</span>
             <pre>{formatEvent(entry.tool_args, entry.tool_result)}</pre>
           </li>
@@ -434,7 +435,7 @@ function AgentActivity({ projectId, taskId, initialLogs }: { projectId: string; 
 }
 
 function formatEvent(args: unknown, result: unknown) {
-  return JSON.stringify({ args, result }, null, 2).slice(0, 16_000);
+  return JSON.stringify({ args, result }, null, 2);
 }
 
 function DeveloperReportView({ report }: { report: DeveloperReport }) {

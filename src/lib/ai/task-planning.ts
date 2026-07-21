@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createGeminiClient, getGeminiModel, withGeminiRateLimitRetry } from "@/lib/ai/gemini";
+import { createGeminiClient, getGeminiModel, resolveConfiguredGeminiModel, withGeminiRateLimitRetry } from "@/lib/ai/gemini";
 
 const clarificationSchema = z.object({
   question: z.string().trim().min(10).max(800),
@@ -59,6 +59,7 @@ export async function proposeTask({
   recentOutcomes,
   humanRecommendation,
   trigger = humanRecommendation ? "human" : "automation",
+  model,
 }: {
   projectContext: unknown;
   target: { category: "general" | "feature"; name: string; description: string; context: unknown };
@@ -67,6 +68,7 @@ export async function proposeTask({
   recentOutcomes: unknown;
   humanRecommendation?: string;
   trigger?: "human" | "automation";
+  model?: string;
 }): Promise<{ type: "clarification"; question: z.infer<typeof clarificationSchema> } | { type: "no_work"; reason: string } | { type: "task"; task: ProposedTask }> {
   const client = createGeminiClient();
   const prompt = [
@@ -106,7 +108,7 @@ export async function proposeTask({
   ].join("\n\n");
 
   const interaction = await withGeminiRateLimitRetry(() => client.interactions.create({
-    model: getGeminiModel("smart"),
+    model: resolveConfiguredGeminiModel(model),
     store: false,
     response_format: { type: "text", mime_type: "application/json" },
     system_instruction: "You are Axiom's task-planning lead. Be conservative, precise, and concise. Never claim code has been changed or ask for credentials unless truly required.",

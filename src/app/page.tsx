@@ -25,38 +25,45 @@ export default async function Home() {
 
       <section className="landing-hero">
         <div className="landing-copy">
-          <p className="landing-kicker"><i /> HUMAN CONTROLLED AI ENGINEERING</p>
-          <h1>AI can build.<br /><em>You stay in command.</em></h1>
-          <p className="landing-lede">Axiom turns your product direction into bounded engineering work, then brings every consequential decision back to you—with the evidence to decide.</p>
+          <p className="landing-kicker"><i /> HUMAN-CONTROLLED ENGINEERING</p>
+          <h1>Delegate the work.<br /><em>Keep the decision.</em></h1>
+          <p className="landing-lede">Axiom turns a product request into a bounded task, runs it in an isolated workspace, and returns evidence for your review.</p>
           <div className="hero-actions">
             <Link className="button landing-primary" href="/projects">Enter the control room <span>→</span></Link>
             <a className="landing-watch" href="#how-it-works"><span>▶</span> See how it works</a>
           </div>
-          <div className="landing-proof"><span>Built for shipping</span><i /><span>Designed for human judgment</span><i /><span>Never merges on its own</span></div>
+          <div className="landing-proof"><span>Bounded tasks</span><i /><span>Inspectable results</span><i /><span>Never merges on its own</span></div>
         </div>
         <div className="landing-console" aria-label="Illustration of Axiom's controlled delivery workflow">
-          <div className="console-top"><span><i /> LIVE HARNESS</span><small>PROJECT / LUMEN</small></div>
-          <div className="console-flow">
-            <div className="console-node human"><b>01</b><strong>Human</strong><span>Sets direction</span></div>
-            <div className="console-line active" />
-            <div className="console-node planner"><b>02</b><strong>Planner</strong><span>Bounds the task</span></div>
-            <div className="console-line amber" />
-            <div className="console-node approval"><b>03</b><strong>Approval</strong><span>Decision required</span></div>
-            <div className="console-line muted" />
-            <div className="console-node worker"><b>04</b><strong>Worker</strong><span>Executes safely</span></div>
+          <div className="console-top"><span><i /> CONTROL ROOM</span><small>PROJECT / LUMEN</small></div>
+          <div className="console-summary">
+            <div><small>ACTIVE TASK</small><strong>Authentication flow</strong></div>
+            <span><i /> REVIEW READY</span>
           </div>
-          <div className="console-alert"><span>03</span><div><small>ACTION REQUIRED</small><strong>Review completed authentication flow</strong></div><button type="button">Review →</button></div>
+          <div className="console-flow" aria-label="Task delivery pipeline">
+            <div className="console-node"><b>01</b><strong>Request</strong><span>Direction set</span></div>
+            <div className="console-arrow">→</div>
+            <div className="console-node"><b>02</b><strong>Task</strong><span>Scope approved</span></div>
+            <div className="console-arrow">→</div>
+            <div className="console-node worker"><b>03</b><strong>Worker</strong><span>Checks passed</span></div>
+            <div className="console-arrow amber">→</div>
+            <div className="console-node approval"><b>04</b><strong>Review</strong><span>Your decision</span></div>
+          </div>
+          <div className="console-evidence">
+            <span><i>✓</i> 12 checks passed</span><span><i>↗</i> Preview ready</span><span><i>±</i> 8 files changed</span>
+          </div>
+          <div className="console-alert"><span>04</span><div><small>HUMAN DECISION REQUIRED</small><strong>Review the completed authentication flow</strong></div><button type="button">Open review <b>→</b></button></div>
           <div className="console-footer"><span><i /> Worker paused for your decision</span><span>01:42 elapsed</span></div>
         </div>
       </section>
 
       <section id="how-it-works" className="landing-principles">
         <p className="eyebrow">THE OPERATING MODEL</p>
-        <h2>Autonomy for execution.<br />Accountability for decisions.</h2>
+        <h2>Autonomy for execution.<br />Accountability for every decision.</h2>
         <div className="principle-grid">
-          <article><span>01</span><h3>Grounded in your project</h3><p>Axiom starts with approved context, repository evidence, and explicit delivery constraints.</p></article>
-          <article><span>02</span><h3>Work is deliberately bounded</h3><p>Every task carries its allowed files, acceptance criteria, and validation commands.</p></article>
-          <article><span>03</span><h3>Nothing consequential is hidden</h3><p>Review the branch, tests, reports, and preview before deciding what moves forward.</p></article>
+          <article><span>01</span><h3>Grounded in your project</h3><p>Approved context and repository evidence give every task a useful starting point.</p></article>
+          <article><span>02</span><h3>Work stays bounded</h3><p>Tasks name their allowed files, acceptance criteria, and validation commands.</p></article>
+          <article><span>03</span><h3>Results stay inspectable</h3><p>Review the branch, tests, reports, and preview before deciding what moves forward.</p></article>
         </div>
       </section>
 
@@ -68,7 +75,7 @@ export default async function Home() {
 
       <footer className="landing-footer">
         <Link className="landing-brand" href="/"><span className="brand-mark">A</span> AXIOM</Link>
-        <p>Human-controlled AI engineering.</p>
+        <p>© 2026 Axiom. All rights reserved.</p>
         <div>
           <Link href="/projects">Workspace</Link>
           <Link href="/login?next=/projects">Log in</Link>

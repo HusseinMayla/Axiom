@@ -5,14 +5,26 @@ import { updateProjectImplementationState } from "@/lib/project-status";
 
 export async function evaluateCompletedTask(supabase: SupabaseClient, projectId: string, taskId: string, trigger: "human" | "automation" = "human") {
   const [{ data: task }, { data: project }] = await Promise.all([
-    supabase.from("tasks").select("id, state, feature_id, objective, developer_prompt, allowed_paths, acceptance_criteria, validation_commands, developer_report, branch_name, automation_attempt_count, features(context_node_id)").eq("id", taskId).eq("project_id", projectId).maybeSingle(),
+    supabase.from("tasks").select("id, state, feature_id, objective, developer_prompt, allowed_paths, acceptance_criteria, validation_commands, developer_report, branch_name, execution_attempt_count, automation_attempt_count, features(context_node_id)").eq("id", taskId).eq("project_id", projectId).maybeSingle(),
     supabase.from("projects").select("settings, automation_state").eq("id", projectId).maybeSingle(),
   ]);
   if (!task) throw new Error("Task not found.");
   if (task.state !== "pending_review") throw new Error("Task is not pending bot evaluation.");
   const repository = repositoryFromProjectSettings(project?.settings);
   if (!repository || !task.branch_name) throw new Error("Connected GitHub repository or branch is missing.");
-  const diff = await getBranchDiff(repository, task.branch_name);
+  const reviewStep = Math.max(92, task.execution_attempt_count + 1);
+  await recordReviewEvent(supabase, projectId, taskId, reviewStep, "ai_review_started", {
+    trigger,
+    branch: task.branch_name,
+    validation_commands: task.validation_commands ?? [],
+  }, { message: "AI review started. Collecting the branch diff, task contract, validation evidence, and execution history." }, "running");
+  let diff: string;
+  try {
+    diff = await getBranchDiff(repository, task.branch_name);
+  } catch (error) {
+    await recordReviewEvent(supabase, projectId, taskId, reviewStep, "ai_review_failed", {}, { stage: "read_diff", error: error instanceof Error ? error.message : "Unknown diff retrieval error" }, "failed");
+    throw error;
+  }
   const report = (task.developer_report ?? {}) as Record<string, unknown>;
   const validationResults = ((report.validation_results ?? []) as string[]).map((res) => ({ command: res.split(":")[0] ?? "validation", exitCode: res.includes("passed") ? 0 : 1, output: res }));
   const featureContextNodeId = (Array.isArray(task.features) ? task.features[0]?.context_node_id : null) ?? null;
@@ -22,7 +34,24 @@ export async function evaluateCompletedTask(supabase: SupabaseClient, projectId:
     supabase.from("task_execution_events").select("step, tool_name, tool_args, tool_result, status, created_at").eq("task_id", taskId).order("created_at", { ascending: false }).limit(24),
   ]);
   const changedPaths = (report.files_created as string[] ?? []).concat(report.files_modified as string[] ?? []);
-  const review = await reviewTask({ task: { objective: task.objective, developerPrompt: task.developer_prompt, allowedPaths: task.allowed_paths ?? [], acceptanceCriteria: task.acceptance_criteria ?? [], validationCommands: task.validation_commands ?? [] }, projectStatus: ((projectContext?.content ?? {}) as Record<string, unknown>).current_status ?? {}, featureStatus: ((featureContext?.content ?? {}) as Record<string, unknown>).current_status ?? {}, diff: diff || "No diff output returned by GitHub.", diffStat: changedPaths.length + " changed path(s): " + changedPaths.join(", "), changedPaths, validationResults, executionEvents: executionEvents ?? [], report });
+  const engineerModel = (project?.settings as { engineer?: { model?: unknown } } | null)?.engineer?.model;
+  let review;
+  try {
+    review = await reviewTask({ task: { objective: task.objective, developerPrompt: task.developer_prompt, allowedPaths: task.allowed_paths ?? [], acceptanceCriteria: task.acceptance_criteria ?? [], validationCommands: task.validation_commands ?? [] }, projectStatus: ((projectContext?.content ?? {}) as Record<string, unknown>).current_status ?? {}, featureStatus: ((featureContext?.content ?? {}) as Record<string, unknown>).current_status ?? {}, diff: diff || "No diff output returned by GitHub.", diffStat: changedPaths.length + " changed path(s): " + changedPaths.join(", "), changedPaths, validationResults, executionEvents: executionEvents ?? [], report, model: engineerModel === "gemini-3.1-flash-lite" || engineerModel === "gemini-3.5-flash" ? engineerModel : undefined });
+  } catch (error) {
+    await recordReviewEvent(supabase, projectId, taskId, reviewStep, "ai_review_failed", {
+      stage: "model_review",
+      changed_paths: changedPaths,
+      validation_results: validationResults,
+      diff_characters: diff.length,
+    }, { error: error instanceof Error ? error.message : "Unknown AI review error" }, "failed");
+    throw error;
+  }
+  await recordReviewEvent(supabase, projectId, taskId, reviewStep, "ai_review_completed", {
+    changed_paths: changedPaths,
+    validation_results: validationResults,
+    diff_characters: diff.length,
+  }, { verdict: review.verdict, summary: review.summary, feedback: review.feedback }, "completed");
   if (trigger === "automation") {
     const { data: currentProject } = await supabase.from("projects").select("automation_state").eq("id", projectId).maybeSingle();
     if (currentProject?.automation_state === "frozen") {
@@ -59,4 +88,27 @@ export async function evaluateCompletedTask(supabase: SupabaseClient, projectId:
   });
   await supabase.from("events").insert({ project_id: projectId, actor_type: "ai", event_type: "automation_evaluated", payload: { task_id: taskId, verdict: "retry", summary: review.summary, retry_cap_reached: retryCapReached } });
   return { verdict: "retry" as const, summary: review.summary, feedback: review.feedback, nextState, retryCapReached, manualValidationFailure };
+}
+
+async function recordReviewEvent(
+  supabase: SupabaseClient,
+  projectId: string,
+  taskId: string,
+  step: number,
+  toolName: string,
+  toolArgs: unknown,
+  toolResult: unknown,
+  status: "running" | "completed" | "failed",
+) {
+  const { error } = await supabase.from("task_execution_events").insert({
+    project_id: projectId,
+    task_id: taskId,
+    step,
+    tool_name: toolName,
+    tool_args: toolArgs,
+    tool_result: toolResult,
+    status,
+    ...(status === "running" ? {} : { finished_at: new Date().toISOString() }),
+  });
+  if (error) console.error("Could not persist AI review terminal event:", error.message);
 }

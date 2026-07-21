@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createGeminiClient, getGeminiModel, withGeminiRateLimitRetry } from "@/lib/ai/gemini";
+import { createGeminiClient, resolveConfiguredGeminiModel, withGeminiRateLimitRetry } from "@/lib/ai/gemini";
 import type { DiscoveryAnswers } from "@/lib/discovery";
 
 const clarificationSchema = z.object({
@@ -107,6 +107,7 @@ function buildPrompt({
   repositoryEvidence,
   allowMoreFiles,
   humanFeedback,
+  model,
 }: {
   projectName: string;
   discoveryAnswers: DiscoveryAnswers;
@@ -114,6 +115,7 @@ function buildPrompt({
   repositoryEvidence?: RepositoryEvidence;
   allowMoreFiles: boolean;
   humanFeedback?: string;
+  model?: string;
 }) {
   return [
     "Create an initial project context for Axiom, a human-controlled AI engineering organization.",
@@ -159,6 +161,7 @@ export async function synthesizeProjectContext({
   repositoryEvidence,
   loadAdditionalFiles,
   humanFeedback,
+  model,
 }: {
   projectName: string;
   discoveryAnswers: DiscoveryAnswers;
@@ -166,6 +169,7 @@ export async function synthesizeProjectContext({
   repositoryEvidence?: RepositoryEvidence;
   loadAdditionalFiles?: (paths: string[]) => Promise<Array<{ path: string; content: string }>>;
   humanFeedback?: string;
+  model?: string;
 }): Promise<
   | { type: "clarifications"; questions: ClarificationRequest[] }
   | { type: "context"; draft: ContextDraft; ingestedFiles: Array<{ path: string; content: string }>; additionallyIngestedFiles: Array<{ path: string; content: string }> }
@@ -178,7 +182,7 @@ export async function synthesizeProjectContext({
   if (evidence && loadAdditionalFiles) {
     const initialEvidence = evidence;
     const selection = await withGeminiRateLimitRetry(() => client.interactions.create({
-      model: getGeminiModel("fast"),
+      model: resolveConfiguredGeminiModel(model, "fast"),
       store: false,
       system_instruction: "You are Axiom's repository evidence selector. Select only files needed to understand the codebase; do not infer their contents.",
       input: buildFileSelectionPrompt(initialEvidence),
@@ -201,7 +205,7 @@ export async function synthesizeProjectContext({
   }
 
   let interaction = await withGeminiRateLimitRetry(() => client.interactions.create({
-    model: getGeminiModel("smart"),
+    model: resolveConfiguredGeminiModel(model),
     store: false,
     system_instruction: "You are Axiom's product and technical discovery lead. Be specific, practical, and concise. Never invent integrations, credentials, or requirements.",
     input: buildPrompt({ projectName, discoveryAnswers, answeredClarifications, repositoryEvidence: evidence, allowMoreFiles: true, humanFeedback }),
@@ -220,7 +224,7 @@ export async function synthesizeProjectContext({
     additionallyIngestedFiles = await loadAdditionalFiles(requestedPaths);
     evidence = { ...currentEvidence, inspectedFiles: [...currentEvidence.inspectedFiles, ...additionallyIngestedFiles] };
     interaction = await withGeminiRateLimitRetry(() => client.interactions.create({
-      model: getGeminiModel("smart"),
+      model: resolveConfiguredGeminiModel(model),
       store: false,
       system_instruction: "You are Axiom's product and technical discovery lead. Be specific, practical, and concise. Never invent integrations, credentials, or requirements.",
       input: buildPrompt({ projectName, discoveryAnswers, answeredClarifications, repositoryEvidence: evidence, allowMoreFiles: false, humanFeedback }),

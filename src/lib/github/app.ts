@@ -20,6 +20,7 @@ type GithubRepository = {
 type GithubTreeEntry = { path: string; type: "blob" | "tree" | "commit"; size?: number };
 type GithubTreeResponse = { tree: GithubTreeEntry[]; truncated: boolean };
 type GithubContentsResponse = { content?: string; encoding?: string; size?: number };
+type GithubBranch = { name: string; protected: boolean; commit: { sha: string } };
 
 class GithubApiError extends Error {
   constructor(
@@ -84,6 +85,14 @@ async function githubFetch<T>(path: string, token: string, init?: RequestInit): 
 
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
+}
+
+function hasGithubStatus(error: unknown, ...statuses: number[]) {
+  return typeof error === "object"
+    && error !== null
+    && "status" in error
+    && typeof error.status === "number"
+    && statuses.includes(error.status);
 }
 
 async function getInstallationToken(installationId: number, repositoryId?: number) {
@@ -236,15 +245,29 @@ export async function readRepositoryFiles(repository: AvailableRepository, paths
 
 export async function scanRepository(repository: AvailableRepository): Promise<RepositoryScan> {
   const token = await getInstallationToken(repository.installationId, repository.id);
+  // Project settings can outlive a repository default-branch rename. Resolve the
+  // branch from GitHub for every scan so automation never assumes `main` exists.
+  const currentRepository = await githubFetch<GithubRepository>(
+    "/repos/" + repository.owner + "/" + repository.name,
+    token,
+  );
+  const currentDefaultBranch = currentRepository.default_branch;
+  const resolvedRepository = currentDefaultBranch === repository.defaultBranch
+    ? repository
+    : { ...repository, defaultBranch: currentDefaultBranch };
   let tree: GithubTreeResponse;
 
   try {
     tree = await githubFetch<GithubTreeResponse>(
-      "/repos/" + repository.owner + "/" + repository.name + "/git/trees/" + encodeURIComponent(repository.defaultBranch) + "?recursive=1",
+      "/repos/" + resolvedRepository.owner + "/" + resolvedRepository.name + "/git/trees/" + encodeURIComponent(resolvedRepository.defaultBranch) + "?recursive=1",
       token,
     );
   } catch (error) {
-    if (error instanceof GithubApiError && error.status === 409) {
+    // GitHub reports a repository without its first commit inconsistently: the
+    // tree endpoint can return either 409 or 404 because no branch ref exists.
+    // Both cases are an empty repository, not a scan failure that automation
+    // should retry indefinitely.
+    if (hasGithubStatus(error, 404, 409)) {
       return {
         isEmpty: true,
         tree: [],
@@ -268,7 +291,7 @@ export async function scanRepository(repository: AvailableRepository): Promise<R
   const initialFiles = pickInitialFiles(files);
   const inspectedFiles = await Promise.all(initialFiles.map(async (path) => ({
     path,
-    content: await readRepositoryFile(repository, path, token),
+    content: await readRepositoryFile(resolvedRepository, path, token),
   })));
 
   return {
@@ -316,6 +339,12 @@ export async function getBranchDiff(repository: AvailableRepository, branchName:
   return response.text();
 }
 
+export async function listRepositoryBranches(repository: AvailableRepository) {
+  const token = await getInstallationToken(repository.installationId, repository.id);
+  const branches = await githubFetch<GithubBranch[]>("/repos/" + repository.owner + "/" + repository.name + "/branches?per_page=100", token);
+  return branches.map((branch) => ({ name: branch.name, protected: branch.protected, sha: branch.commit.sha }));
+}
+
 export function repositoryFromProjectSettings(settings: unknown): AvailableRepository | null {
   const github = (settings as { github?: unknown } | null)?.github as Record<string, unknown> | undefined;
   if (!github
@@ -336,4 +365,24 @@ export function repositoryFromProjectSettings(settings: unknown): AvailableRepos
     private: github.private,
     htmlUrl: "https://github.com/" + github.full_name,
   };
+}
+
+export async function getRepositoryTree(repository: AvailableRepository, branchName: string): Promise<string[]> {
+  const token = await getInstallationToken(repository.installationId, repository.id);
+  let tree: GithubTreeResponse;
+  try {
+    tree = await githubFetch<GithubTreeResponse>(
+      "/repos/" + repository.owner + "/" + repository.name + "/git/trees/" + encodeURIComponent(branchName) + "?recursive=1",
+      token,
+    );
+  } catch (error) {
+    // A repository without its first commit has no tree for its configured
+    // default branch. Present that as an empty structure in Overview.
+    if (hasGithubStatus(error, 404, 409)) return [];
+    throw error;
+  }
+  return tree.tree
+    .filter((entry) => entry.type === "blob" && isSafePath(entry.path))
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map((entry) => entry.path);
 }

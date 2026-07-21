@@ -99,7 +99,15 @@ export async function POST(
   const trigger = guidedRequest ? "human" : "automation";
   const repository = repositoryFromProjectSettings(project.settings);
   if (!repository) return Response.json({ error: "Connect a GitHub repository before planning work." }, { status: 409 });
-  const freshScan = await scanRepository(repository);
+  let freshScan;
+  try {
+    freshScan = await scanRepository(repository);
+  } catch (error) {
+    console.error("Axiom could not scan the repository before planning", error);
+    return Response.json({
+      error: "Axiom cannot read this repository's files. In the GitHub App settings, grant the app Contents: Read-only access for this repository, save or reinstall the app, then reconnect the repository in Axiom.",
+    }, { status: 502 });
+  }
   const repositoryContent = {
     ...((repositoryMap?.content ?? {}) as Record<string, unknown>),
     tree: freshScan.tree,
@@ -134,6 +142,7 @@ export async function POST(
       recentOutcomes: outcomes ?? [],
       humanRecommendation: guidedRequest?.recommendation,
       trigger,
+      model: engineerModelFromSettings(project.settings),
     });
 
     if (result.type === "clarification") {
@@ -193,6 +202,11 @@ export async function POST(
     console.error("Axiom task planning failed", error);
     return Response.json({ error: "Axiom could not create a valid task proposal. Try again after refining the context." }, { status: 502 });
   }
+}
+
+function engineerModelFromSettings(settings: unknown) {
+  const model = (settings as { engineer?: { model?: unknown } } | null)?.engineer?.model;
+  return model === "gemini-3.1-flash-lite" || model === "gemini-3.5-flash" ? model : undefined;
 }
 
 function repositoryFromProjectSettings(settings: unknown): AvailableRepository | null {

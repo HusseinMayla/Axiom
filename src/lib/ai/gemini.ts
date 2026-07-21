@@ -14,6 +14,13 @@ export function getGeminiModel(tier: AxiomModelTier) {
   return tier === "smart" ? env.smartModel : env.fastModel;
 }
 
+/** Project settings store a stable capability name, never a provider model id. */
+export function resolveConfiguredGeminiModel(selection: unknown, fallback: AxiomModelTier = "smart") {
+  if (selection === "gemini-3.1-flash-lite") return getGeminiModel("fast");
+  if (selection === "gemini-3.5-flash") return getGeminiModel("smart");
+  return getGeminiModel(fallback);
+}
+
 /** Retries Gemini's short rolling quota limits instead of failing a task immediately. */
 export async function withGeminiRateLimitRetry<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   const startedAt = Date.now();

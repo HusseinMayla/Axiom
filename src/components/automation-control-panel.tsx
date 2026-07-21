@@ -16,6 +16,31 @@ export function AutomationControlPanel({ projectId }: { projectId: string }) {
     if (response.ok) setSnapshot(await response.json() as Snapshot);
   };
   useEffect(() => { void load(); const timer = setInterval(() => void load(), 4000); return () => clearInterval(timer); }, [projectId]);
+  // A trusted scheduler is used in production, but keep the automatic flow
+  // advancing during an open project session as well. Durable leases prevent
+  // this fallback from duplicating work when the scheduler is also running.
+  useEffect(() => {
+    if (snapshot?.state !== "running") return;
+    let busy = false;
+    const runAutomaticCycle = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const response = await fetch(`/api/projects/${projectId}/automation/cycle`, { method: "POST" });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          setError(payload.error ?? "Automatic automation cycle failed.");
+        }
+      } catch {
+        setError("Automatic automation cycle could not reach the server.");
+      } finally {
+        busy = false;
+      }
+    };
+    void runAutomaticCycle();
+    const timer = window.setInterval(() => void runAutomaticCycle(), 15_000);
+    return () => window.clearInterval(timer);
+  }, [projectId, snapshot?.state]);
   const toggle = async () => {
     if (!snapshot) return;
     setPending(true); setError("");

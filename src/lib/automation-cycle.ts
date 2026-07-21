@@ -100,6 +100,7 @@ async function execute(supabase: Supabase, projectId: string, taskId: string, ow
 async function plan(supabase: Supabase, projectId: string, owner: string, featureId: string | null, claimedReason: string): Promise<CycleResult> {
   try {
     return await withLeaseHeartbeat(supabase, projectId, "planning", owner, async () => {
+      await event(supabase, projectId, "automation_planning_started", { feature_id: featureId, message: "Planning started. Reading approved context and scanning the repository before calling the AI planner." });
       const [{ data: project }, { data: root }, { data: feature }, { data: map }] = await Promise.all([
       supabase.from("projects").select("settings").eq("id", projectId).single(),
       supabase.from("context_nodes").select("content").eq("project_id", projectId).eq("kind", "project").eq("status", "approved").order("created_at", { ascending: false }).limit(1).maybeSingle(),
@@ -131,7 +132,7 @@ async function plan(supabase: Supabase, projectId: string, owner: string, featur
       feature_id: featureId,
       inputs: { project_context: true, feature_context: Boolean(featureNode), repository_tree_paths: scan.tree.length, inspected_files: scan.inspectedFiles.length, active_tasks: (activeTasks ?? []).length, recent_outcomes: (outcomes ?? []).length },
     });
-    const proposal = await proposeTask({ projectContext: rootContext, target, repositoryMap, activeTasks: activeTasks ?? [], recentOutcomes: outcomes ?? [], trigger: "automation" });
+    const proposal = await proposeTask({ projectContext: rootContext, target, repositoryMap, activeTasks: activeTasks ?? [], recentOutcomes: outcomes ?? [], trigger: "automation", model: engineerModelFromSettings(project?.settings) });
     if (proposal.type === "no_work") { await event(supabase, projectId, "planning_no_work", { feature_id: featureId, reason: proposal.reason }); return result("planning", "propose", null, featureId, proposal.reason); }
     if (proposal.type === "clarification") {
       await supabase.from("clarification_questions").insert({ project_id: projectId, feature_id: featureId, question: proposal.question.question, rationale: proposal.question.rationale });
@@ -156,6 +157,7 @@ async function plan(supabase: Supabase, projectId: string, owner: string, featur
 
 async function event(supabase: Supabase, projectId: string, event_type: string, payload: Record<string, unknown>) { await supabase.from("events").insert({ project_id: projectId, actor_type: "ai", event_type, payload }); }
 function repositoryFromSettings(settings: unknown): AvailableRepository | null { const g = (settings as { github?: unknown } | null)?.github as Record<string, unknown> | undefined; return g && typeof g.repository_id === "number" && typeof g.installation_id === "number" && typeof g.owner === "string" && typeof g.name === "string" && typeof g.full_name === "string" && typeof g.default_branch === "string" && typeof g.private === "boolean" ? { id: g.repository_id, installationId: g.installation_id, owner: g.owner, name: g.name, fullName: g.full_name, defaultBranch: g.default_branch, private: g.private, htmlUrl: "" } : null; }
+function engineerModelFromSettings(settings: unknown) { const model = (settings as { engineer?: { model?: unknown } } | null)?.engineer?.model; return model === "gemini-3.1-flash-lite" || model === "gemini-3.5-flash" ? model : undefined; }
 
 async function claim(supabase: Supabase, projectId: string, lane: "planning" | "delivery", taskId: string | null, action: "propose" | "execute" | "evaluate", owner: string) {
   const { data, error } = await supabase.rpc("claim_automation_lease", { p_project_id: projectId, p_lane: lane, p_task_id: taskId, p_action: action, p_owner: owner, p_expires_at: new Date(Date.now() + LEASE_TTL_MS).toISOString() });

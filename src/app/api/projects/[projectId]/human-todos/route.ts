@@ -13,7 +13,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ projectId
   if (!user) return Response.json({ error: "Sign in before refreshing the worklist." }, { status: 401 });
 
   const [{ data: project }, { data: rootNode }, { data: features }, { data: tasks }, { data: questions }, { data: priorTodos }] = await Promise.all([
-    supabase.from("projects").select("id, state").eq("id", projectId).single(),
+    supabase.from("projects").select("id, state, settings").eq("id", projectId).single(),
     supabase.from("context_nodes").select("content").eq("project_id", projectId).eq("kind", "project").eq("status", "approved").order("created_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("features").select("name, description, status, priority").eq("project_id", projectId).order("priority"),
     supabase.from("tasks").select("objective, state, human_summary, updated_at").eq("project_id", projectId).is("archived_at", null).order("updated_at", { ascending: false }).limit(30),
@@ -24,7 +24,8 @@ export async function POST(_: Request, { params }: { params: Promise<{ projectId
   if (project.state !== "active" || !rootNode) return Response.json({ error: "Approve project context before generating a human worklist." }, { status: 409 });
 
   try {
-    const todos = await generateHumanTodos({ projectContext: rootNode.content, features: features ?? [], tasks: tasks ?? [], clarifications: questions ?? [], priorHumanComments: priorTodos ?? [] });
+    const model = (project.settings as { engineer?: { model?: unknown } } | null)?.engineer?.model;
+    const todos = await generateHumanTodos({ projectContext: rootNode.content, features: features ?? [], tasks: tasks ?? [], clarifications: questions ?? [], priorHumanComments: priorTodos ?? [], model: model === "gemini-3.1-flash-lite" || model === "gemini-3.5-flash" ? model : undefined });
     await supabase.from("human_todos").update({ status: "superseded", updated_at: new Date().toISOString() }).eq("project_id", projectId).eq("status", "open").eq("source", "ai");
     if (todos.length) {
       const { error } = await supabase.from("human_todos").insert(todos.map((todo) => ({ project_id: projectId, ...todo, source: "ai" })));

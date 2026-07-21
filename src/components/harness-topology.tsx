@@ -37,7 +37,7 @@ export function HarnessTopology({
         openClarifications={openClarifications}
         activeTask={activeTask}
         automationState={automationState}
-        showSimulationControls={true}
+        showSimulationControls={false}
       />
     </section>
   );

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createGeminiClient, getGeminiModel, withGeminiRateLimitRetry } from "@/lib/ai/gemini";
+import { createGeminiClient, resolveConfiguredGeminiModel, withGeminiRateLimitRetry } from "@/lib/ai/gemini";
 
 const humanTodoSchema = z.object({
   title: z.string().trim().min(5).max(280),
@@ -21,6 +21,7 @@ export async function generateHumanTodos(input: {
   tasks: unknown;
   clarifications: unknown;
   priorHumanComments: unknown;
+  model?: string;
 }) {
   const client = createGeminiClient();
   const prompt = [
@@ -39,7 +40,7 @@ export async function generateHumanTodos(input: {
   ].join("\n\n");
 
   const interaction = await withGeminiRateLimitRetry(() => client.interactions.create({
-    model: getGeminiModel("smart"),
+    model: resolveConfiguredGeminiModel(input.model),
     store: false,
     response_format: { type: "text", mime_type: "application/json" },
     system_instruction: "You are Axiom's human-control assistant. Be concise, evidence-based, and never invent project facts.",
