@@ -1,14 +1,25 @@
 import { NextRequest } from "next/server";
+import { z } from "zod";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { synthesizeProjectContext } from "@/lib/ai/context-synthesis";
 import type { DiscoveryAnswers } from "@/lib/discovery";
 import { readRepositoryFiles, type AvailableRepository } from "@/lib/github/app";
+import { initialFeatureCurrentStatus, initialProjectCurrentStatus } from "@/lib/current-status";
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ projectId: string }> },
 ) {
   const { projectId } = await params;
+  const rawBody = await request.text();
+  let requestBody: unknown = {};
+  try {
+    requestBody = rawBody ? JSON.parse(rawBody) : {};
+  } catch {
+    return Response.json({ error: "Invalid context feedback request." }, { status: 400 });
+  }
+  const body = z.object({ feedback: z.string().trim().min(10).max(4000).optional() }).safeParse(requestBody);
+  if (!body.success) return Response.json({ error: "Context feedback must be between 10 and 4,000 characters." }, { status: 400 });
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
 
@@ -68,6 +79,7 @@ export async function POST(
       answeredClarifications: (questions ?? [])
         .filter((question) => question.status === "answered" && question.answer)
         .map((question) => ({ question: question.question, answer: question.answer as string })),
+      humanFeedback: body.data.feedback,
       repositoryEvidence: repositoryMap ? repositoryEvidenceFromContent(repositoryMap.content) : undefined,
       loadAdditionalFiles: repositoryMap
         ? async (paths) => {
@@ -102,6 +114,7 @@ export async function POST(
 
     await supabase.from("features").delete().eq("project_id", projectId).eq("status", "draft");
     await supabase.from("context_nodes").delete().eq("project_id", projectId).eq("kind", "project").eq("status", "draft");
+    const projectCurrentStatus = initialProjectCurrentStatus(repositoryHasNoSourceFiles(repositoryMap?.content));
 
     const { data: rootNode, error: rootError } = await supabase
       .from("context_nodes")
@@ -118,6 +131,7 @@ export async function POST(
           operating_rules: result.draft.operating_rules,
           future_plans: result.draft.future_plans,
           features: result.draft.features,
+          current_status: projectCurrentStatus,
         },
       })
       .select("id")
@@ -137,7 +151,11 @@ export async function POST(
           status: "draft",
           source: "ai_summary",
           title: feature.name,
-          content: { description: feature.description, use_cases: feature.use_cases },
+          content: {
+            description: feature.description,
+            use_cases: feature.use_cases,
+            current_status: initialFeatureCurrentStatus(),
+          },
         })
         .select("id")
         .single();
@@ -166,6 +184,15 @@ export async function POST(
     }).eq("project_id", projectId);
 
     await supabase.from("projects").update({ state: "context_draft" }).eq("id", projectId);
+
+    if (body.data.feedback) {
+      await supabase.from("events").insert({
+        project_id: projectId,
+        actor_type: "human",
+        event_type: "context_feedback",
+        payload: { feedback: body.data.feedback },
+      });
+    }
 
     if (repositoryMap) {
       const map = (repositoryMap.content ?? {}) as Record<string, unknown>;
@@ -246,4 +273,11 @@ function repositoryEvidenceFromContent(content: unknown) {
     fileSizes,
     inspectedFiles,
   };
+}
+
+function repositoryHasNoSourceFiles(repositoryMapContent: unknown) {
+  const map = (repositoryMapContent ?? {}) as Record<string, unknown>;
+  const repository = (map.repository ?? {}) as Record<string, unknown>;
+  const sourceFileCount = typeof repository.source_file_count === "number" ? repository.source_file_count : null;
+  return sourceFileCount === 0;
 }

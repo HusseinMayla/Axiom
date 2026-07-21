@@ -82,6 +82,7 @@ async function githubFetch<T>(path: string, token: string, init?: RequestInit): 
     throw new GithubApiError(response.status, path);
   }
 
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -203,8 +204,27 @@ async function readRepositoryFile(repository: AvailableRepository, path: string,
   return content.slice(0, 15000);
 }
 
-export async function readRepositoryFiles(repository: AvailableRepository, paths: string[]) {
-  const safePaths = [...new Set(paths.filter(isSafePath))].slice(0, 5);
+export async function getRepositoryInstallationToken(repository: AvailableRepository) {
+  return getInstallationToken(repository.installationId, repository.id);
+}
+
+export async function deleteRepositoryBranch(repository: AvailableRepository, branchName: string) {
+  if (!/^axiom\/task-[a-z0-9-]+$/.test(branchName)) throw new Error("Refusing to delete a branch outside Axiom's task namespace.");
+  const token = await getInstallationToken(repository.installationId, repository.id);
+  try {
+    await githubFetch<void>(
+      "/repos/" + repository.owner + "/" + repository.name + "/git/refs/heads/" + branchName,
+      token,
+      { method: "DELETE" },
+    );
+  } catch (error) {
+    if (error instanceof GithubApiError && error.status === 404) return;
+    throw error;
+  }
+}
+
+export async function readRepositoryFiles(repository: AvailableRepository, paths: string[], limit = 5) {
+  const safePaths = [...new Set(paths.filter(isSafePath))].slice(0, limit);
   const token = await getInstallationToken(repository.installationId, repository.id);
   const files = await Promise.all(safePaths.map(async (path) => ({
     path,
@@ -259,5 +279,61 @@ export async function scanRepository(repository: AvailableRepository): Promise<R
     languageHints: [...new Set(sourceFiles.map(extension))].sort(),
     fileSizes: Object.fromEntries(fileEntries.slice(0, 750).map((entry) => [entry.path, entry.size ?? 0])),
     inspectedFiles: inspectedFiles.filter((file) => file.content.length > 0),
+  };
+}
+
+export async function mergeRepositoryBranch(repository: AvailableRepository, branchName: string, commitMessage: string) {
+  const token = await getRepositoryInstallationToken(repository);
+  return githubFetch<{ sha: string }>(
+    "/repos/" + repository.owner + "/" + repository.name + "/merges",
+    token,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        base: repository.defaultBranch,
+        head: branchName,
+        commit_message: commitMessage,
+      }),
+    },
+  );
+}
+
+export async function getBranchDiff(repository: AvailableRepository, branchName: string): Promise<string> {
+  const token = await getRepositoryInstallationToken(repository);
+  const response = await fetch(
+    API_URL + "/repos/" + repository.owner + "/" + repository.name + "/compare/" + encodeURIComponent(repository.defaultBranch) + "..." + encodeURIComponent(branchName),
+    {
+      headers: {
+        Accept: "application/vnd.github.diff",
+        Authorization: "Bearer " + token,
+        "X-GitHub-Api-Version": API_VERSION,
+      },
+      cache: "no-store",
+    },
+  );
+  if (!response.ok) return "";
+  return response.text();
+}
+
+export function repositoryFromProjectSettings(settings: unknown): AvailableRepository | null {
+  const github = (settings as { github?: unknown } | null)?.github as Record<string, unknown> | undefined;
+  if (!github
+    || typeof github.repository_id !== "number"
+    || typeof github.installation_id !== "number"
+    || typeof github.owner !== "string"
+    || typeof github.name !== "string"
+    || typeof github.full_name !== "string"
+    || typeof github.default_branch !== "string"
+    || typeof github.private !== "boolean") return null;
+  return {
+    id: github.repository_id,
+    installationId: github.installation_id,
+    owner: github.owner,
+    name: github.name,
+    fullName: github.full_name,
+    defaultBranch: github.default_branch,
+    private: github.private,
+    htmlUrl: "https://github.com/" + github.full_name,
   };
 }

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createGeminiClient, getGeminiModel } from "@/lib/ai/gemini";
+import { createGeminiClient, getGeminiModel, withGeminiRateLimitRetry } from "@/lib/ai/gemini";
 import type { DiscoveryAnswers } from "@/lib/discovery";
 
 const clarificationSchema = z.object({
@@ -106,12 +106,14 @@ function buildPrompt({
   answeredClarifications,
   repositoryEvidence,
   allowMoreFiles,
+  humanFeedback,
 }: {
   projectName: string;
   discoveryAnswers: DiscoveryAnswers;
   answeredClarifications: Array<{ question: string; answer: string }>;
   repositoryEvidence?: RepositoryEvidence;
   allowMoreFiles: boolean;
+  humanFeedback?: string;
 }) {
   return [
     "Create an initial project context for Axiom, a human-controlled AI engineering organization.",
@@ -133,6 +135,8 @@ function buildPrompt({
     "Project name: " + projectName,
     "Client-discovery answers:", JSON.stringify(discoveryAnswers),
     "Previously answered clarification questions:", JSON.stringify(answeredClarifications),
+    humanFeedback ? "Human feedback on the previous context draft. Address it directly; this feedback is authoritative for the revised draft:" : "",
+    humanFeedback ?? "",
     repositoryEvidence ? "Repository scan evidence (use it to ground the context in existing code):" : "",
     repositoryEvidence ? JSON.stringify(repositoryEvidence) : "",
   ].join("\n\n");
@@ -154,12 +158,14 @@ export async function synthesizeProjectContext({
   answeredClarifications,
   repositoryEvidence,
   loadAdditionalFiles,
+  humanFeedback,
 }: {
   projectName: string;
   discoveryAnswers: DiscoveryAnswers;
   answeredClarifications: Array<{ question: string; answer: string }>;
   repositoryEvidence?: RepositoryEvidence;
   loadAdditionalFiles?: (paths: string[]) => Promise<Array<{ path: string; content: string }>>;
+  humanFeedback?: string;
 }): Promise<
   | { type: "clarifications"; questions: ClarificationRequest[] }
   | { type: "context"; draft: ContextDraft; ingestedFiles: Array<{ path: string; content: string }>; additionallyIngestedFiles: Array<{ path: string; content: string }> }
@@ -170,13 +176,14 @@ export async function synthesizeProjectContext({
   let additionallyIngestedFiles: Array<{ path: string; content: string }> = [];
 
   if (evidence && loadAdditionalFiles) {
-    const selection = await client.interactions.create({
+    const initialEvidence = evidence;
+    const selection = await withGeminiRateLimitRetry(() => client.interactions.create({
       model: getGeminiModel("fast"),
       store: false,
       system_instruction: "You are Axiom's repository evidence selector. Select only files needed to understand the codebase; do not infer their contents.",
-      input: buildFileSelectionPrompt(evidence),
+      input: buildFileSelectionPrompt(initialEvidence),
       tools: [selectInitialFilesTool],
-    });
+    }));
     const selectionCall = selection.steps
       .filter((step) => step.type === "function_call" && step.name === "select_initial_files")
       .map((step) => selectInitialFilesSchema.safeParse((step as { arguments: unknown }).arguments))
@@ -193,13 +200,13 @@ export async function synthesizeProjectContext({
     }
   }
 
-  let interaction = await client.interactions.create({
+  let interaction = await withGeminiRateLimitRetry(() => client.interactions.create({
     model: getGeminiModel("smart"),
     store: false,
     system_instruction: "You are Axiom's product and technical discovery lead. Be specific, practical, and concise. Never invent integrations, credentials, or requirements.",
-    input: buildPrompt({ projectName, discoveryAnswers, answeredClarifications, repositoryEvidence: evidence, allowMoreFiles: true }),
+    input: buildPrompt({ projectName, discoveryAnswers, answeredClarifications, repositoryEvidence: evidence, allowMoreFiles: true, humanFeedback }),
     tools: [askHumanTool, ingestMoreFilesTool],
-  });
+  }));
 
   const ingestionCall = interaction.steps
     .filter((step) => step.type === "function_call" && step.name === "ingest_more_files")
@@ -212,13 +219,13 @@ export async function synthesizeProjectContext({
     const requestedPaths = ingestionCall.data.paths.filter((path) => allowedPaths.has(path) && !currentEvidence.inspectedFiles.some((file) => file.path === path));
     additionallyIngestedFiles = await loadAdditionalFiles(requestedPaths);
     evidence = { ...currentEvidence, inspectedFiles: [...currentEvidence.inspectedFiles, ...additionallyIngestedFiles] };
-    interaction = await client.interactions.create({
+    interaction = await withGeminiRateLimitRetry(() => client.interactions.create({
       model: getGeminiModel("smart"),
       store: false,
       system_instruction: "You are Axiom's product and technical discovery lead. Be specific, practical, and concise. Never invent integrations, credentials, or requirements.",
-      input: buildPrompt({ projectName, discoveryAnswers, answeredClarifications, repositoryEvidence: evidence, allowMoreFiles: false }),
+      input: buildPrompt({ projectName, discoveryAnswers, answeredClarifications, repositoryEvidence: evidence, allowMoreFiles: false, humanFeedback }),
       tools: [askHumanTool],
-    });
+    }));
   }
 
   const toolCalls = interaction.steps

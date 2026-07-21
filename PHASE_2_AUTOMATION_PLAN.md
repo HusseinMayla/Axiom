@@ -26,10 +26,31 @@ Every approved project context and feature context has:
 current_status: {
   implementation_state: "not_started" | "in_progress" | "implemented" | "blocked" | "unknown";
   summary: string;
-  confirmed_by: "human" | "scanner" | "task_outcome";
+  confirmed_by: "human" | "scanner" | "task_outcome" | "system";
   confirmed_at: string;
   evidence_paths: string[];
   known_gaps: string[];
+  blockers: string[];
+  active_task: {
+    task_id: string;
+    category: "general" | "feature";
+    objective: string;
+    task_state: string;
+    planned_files: string[];
+    expected_changes: string[];
+    completed_changes: string[];
+    remaining_work: string[];
+    latest_report: string | null;
+  } | null;
+  code_snapshot: {
+    files_created: string[];
+    files_modified: string[];
+    modules_or_interfaces: string[];
+    schema_or_configuration: string[];
+    available_behavior: string[];
+    validation_results: string[];
+  };
+  completed_work: Array<{ task_id: string; summary: string; evidence_paths: string[]; completed_at: string }>;
 }
 ```
 
@@ -39,6 +60,7 @@ Rules:
 - The planner treats `current_status` as the implementation source of truth; it does not infer implemented work from the desired feature list.
 - A completed task updates only the affected project or feature `current_status`, with its report/evidence. This is reserved for the later execution/review phase.
 - A feature task may only depend on work declared implemented in the relevant project/feature status or an approved active task.
+- While a task is `in_progress` or `awaiting_review`, `active_task` and `code_snapshot` must be sufficiently specific for a reader to predict the code currently present without re-reading the repository. The later Docker report and human review are the only writers of this implementation detail.
 
 ## Task categories and ordering
 
@@ -83,7 +105,9 @@ The planner creates one proposal per trigger, never a batch.
 
 Contains `waiting_for_approval` tasks. Show the high-level purpose, affected scope, expected outcome, risk/dependency summary, and human prerequisites. Keep the full developer prompt hidden in this human view.
 
-Human actions: approve, request changes/leave feedback, or reject/hold.
+Human actions: approve, request changes/leave feedback, or reject/hold. Until Docker and review logic exist, these action buttons are rendered as disabled placeholders; they must not mutate task state.
+
+Each proposal has a **Read more** disclosure for the stored detailed developer prompt, allowed paths, implementation steps, acceptance criteria, and validation commands. This is intentionally inspectable for the demo, while the collapsed card remains high-level.
 
 ### 2. Developer queue — ready to implement
 
@@ -103,6 +127,8 @@ Contains `pending_review` tasks with the developer report. The future human deci
 
 No developer or reviewer execution logic is added in this phase.
 
+The future developer report is structured, not free-form: summary, created/modified files, interfaces, schema/configuration changes, delivered behavior, validation results, limitations, and handoff. On accepted review, these fields become the authoritative input for `current_status.code_snapshot` and `current_status.completed_work`.
+
 ## Manual trigger mode for the demo
 
 Keep automation observable but credit-safe:
@@ -113,12 +139,17 @@ Keep automation observable but credit-safe:
 
 Later, a worker/cron trigger may invoke the same endpoints when a queue changes. The task state machine and ordering must be identical in manual and automatic modes.
 
+## Phase 1 context feedback loop
+
+Before approval, the human can send feedback on a generated context draft. Axiom records that feedback as an event and runs synthesis again with the feedback as an explicit constraint. The replacement remains a draft and returns to the same human approval gate; approved context is never silently overwritten.
+
 ## Implementation order
 
 1. Replace the current auto-planning-on-context-approval call with a manual planning trigger.
 2. Add the category, priority, and nullable feature ownership migration.
 3. Add `current_status` to root and feature context drafts; ensure approval persists it.
-4. Change planner eligibility: general-first, status-aware, one proposal per trigger, include active task list.
-5. Replace the current proposal card with the three queue UI sections.
-6. Add task feedback/rejection state transitions and report fields, but do not execute developer/reviewer models.
-7. Only after the queue UI is stable, add Docker execution and review logic.
+4. Add the Phase 1 context-feedback-to-resynthesis loop.
+5. Change planner eligibility: general-first, status-aware, one proposal per trigger, include active task list.
+6. Replace the current proposal card with the three queue UI sections and Read more disclosure.
+7. Add task feedback/rejection state transitions and report fields, but keep their buttons disabled until execution/review exists.
+8. Only after the queue UI is stable, add Docker execution and review logic.

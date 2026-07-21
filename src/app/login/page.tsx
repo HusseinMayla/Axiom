@@ -13,9 +13,9 @@ export default async function LoginPage({
     <main className="shell narrow">
       <Link className="back-link" href="/">← Axiom</Link>
       <section className="hero compact-hero">
-        <p className="eyebrow">SIGN IN</p>
+        <p className="eyebrow">PASSWORDLESS LOGIN</p>
         <h1>Your engineering workspace.</h1>
-        <p className="lede">Use a magic link to keep your projects and project context private.</p>
+        <p className="lede">Enter your email and we’ll send a secure sign-in link. No password required.</p>
       </section>
       <section className="panel">
         <SignInForm nextPath={nextPath} />
@@ -23,4 +23,3 @@ export default async function LoginPage({
     </main>
   );
 }
-

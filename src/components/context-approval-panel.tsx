@@ -56,8 +56,7 @@ export function ContextApprovalPanel({
     }
 
     setState("idle");
-    setMessage("Context approved. Selected features are active; Axiom is planning the first eligible feature.");
-    await fetch("/api/projects/" + projectId + "/plan-next", { method: "POST" });
+    setMessage("Context approved. Selected features are active. Task planning is being prepared for the next phase.");
     router.refresh();
   }
 

@@ -29,6 +29,7 @@ export function ContextSynthesisPanel({
   );
   const [state, setState] = useState<"idle" | "working" | "error">("idle");
   const [message, setMessage] = useState("");
+  const [feedback, setFeedback] = useState("");
 
   const openQuestions = questions.filter((question) => question.status === "open");
 
@@ -47,6 +48,26 @@ export function ContextSynthesisPanel({
 
     setState("idle");
     setMessage(payload.type === "clarifications" ? "Gemini needs a few focused answers before drafting context." : "Context draft generated.");
+    router.refresh();
+  }
+
+  async function reviseContext() {
+    setState("working");
+    setMessage("");
+    const response = await fetch("/api/projects/" + projectId + "/synthesize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ feedback }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      setState("error");
+      setMessage(payload.error ?? "Could not revise the context.");
+      return;
+    }
+    setState("idle");
+    setFeedback("");
+    setMessage(payload.type === "clarifications" ? "Axiom needs a clarification before it can revise the draft." : "Context draft revised from your feedback.");
     router.refresh();
   }
 
@@ -70,7 +91,8 @@ export function ContextSynthesisPanel({
     }
 
     setState("idle");
-    setMessage("Answers saved. Generate context again when ready.");
+    setMessage("Answers saved! Proposing next task...");
+    await fetch("/api/projects/" + projectId + "/plan-next", { method: "POST" }).catch(() => null);
     router.refresh();
   }
 
@@ -127,6 +149,13 @@ export function ContextSynthesisPanel({
             <ContextList title="Technical constraints" items={draft.technical_constraints} />
             <ContextList title="Future plans" items={draft.future_plans} />
           </div>
+          <div className="context-feedback">
+            <label htmlFor="context-feedback">Request a revision</label>
+            <textarea id="context-feedback" rows={3} value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="Explain what is inaccurate, missing, or should change in this context draft." />
+            <button className="button secondary compact-button" disabled={state === "working" || feedback.trim().length < 10} onClick={reviseContext}>
+              {state === "working" ? "Revising…" : "Send feedback and regenerate"}
+            </button>
+          </div>
           <h3>Feature proposals</h3>
           <div className="feature-list">
             {draft.features.map((feature) => (
@@ -141,8 +170,6 @@ export function ContextSynthesisPanel({
                     <article key={useCase.actor + useCase.goal}>
                       <strong>{useCase.actor}: {useCase.goal}</strong>
                       <p><b>Trigger:</b> {useCase.trigger}</p>
-                      <p><b>Outcome:</b> {useCase.expected_outcome}</p>
-                      <ul>{useCase.acceptance_criteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
                     </article>
                   ))}
                 </details>
@@ -156,10 +183,15 @@ export function ContextSynthesisPanel({
 }
 
 function ContextList({ title, items }: { title: string; items: string[] }) {
+  if (items.length === 0) return null;
   return (
-    <article>
-      <h3>{title}</h3>
-      {items.length ? <ul>{items.map((item) => <li key={item}>{item}</li>)}</ul> : <p>None specified.</p>}
+    <article className="context-card">
+      <h4>{title}</h4>
+      <ul>
+        {items.map((item, index) => (
+          <li key={index}>{item}</li>
+        ))}
+      </ul>
     </article>
   );
 }
