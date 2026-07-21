@@ -22,8 +22,9 @@ export function resolveConfiguredGeminiModel(selection: unknown, fallback: Axiom
 }
 
 /** Retries Gemini's short rolling quota limits instead of failing a task immediately. */
-export async function withGeminiRateLimitRetry<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+export async function withGeminiRateLimitRetry<T>(operation: () => Promise<T>, signal?: AbortSignal, onRateLimit?: (info: { attempt: number; elapsedMs: number; retryInMs: number; message: string }) => void | Promise<void>): Promise<T> {
   const startedAt = Date.now();
+  let rateLimitAttempt = 0;
   while (true) {
     try {
       throwIfAborted(signal);
@@ -31,6 +32,8 @@ export async function withGeminiRateLimitRetry<T>(operation: () => Promise<T>, s
     } catch (error) {
       if (signal?.aborted) throw signal.reason ?? new Error("Gemini operation cancelled.");
       if (!isGeminiRateLimitError(error) || Date.now() - startedAt + RATE_LIMIT_RETRY_INTERVAL_MS > MAX_RATE_LIMIT_WAIT_MS) throw error;
+      rateLimitAttempt += 1;
+      await onRateLimit?.({ attempt: rateLimitAttempt, elapsedMs: Date.now() - startedAt, retryInMs: RATE_LIMIT_RETRY_INTERVAL_MS, message: error instanceof Error ? error.message.slice(0, 600) : "Provider returned a rate-limit response." });
       await waitForRetry(signal);
     }
   }

@@ -10,6 +10,9 @@ export async function evaluateCompletedTask(supabase: SupabaseClient, projectId:
   ]);
   if (!task) throw new Error("Task not found.");
   if (task.state !== "pending_review") throw new Error("Task is not pending bot evaluation.");
+  if (trigger === "automation" && project?.automation_state === "frozen") {
+    return { verdict: "deferred" as const, summary: "Automatic validation was deferred because a human froze automation.", feedback: [], nextState: "pending_review" as const };
+  }
   const repository = repositoryFromProjectSettings(project?.settings);
   if (!repository || !task.branch_name) throw new Error("Connected GitHub repository or branch is missing.");
   const reviewStep = Math.max(92, task.execution_attempt_count + 1);
@@ -55,7 +58,7 @@ export async function evaluateCompletedTask(supabase: SupabaseClient, projectId:
   if (trigger === "automation") {
     const { data: currentProject } = await supabase.from("projects").select("automation_state").eq("id", projectId).maybeSingle();
     if (currentProject?.automation_state === "frozen") {
-      return { verdict: "deferred" as const, summary: "Automatic validation was deferred because a human froze automation.", feedback: [], nextState: "pending_review" as const };
+      return { verdict: "deferred" as const, summary: "Automatic validation finished collecting evidence but was deferred because a human froze automation.", feedback: [], nextState: "pending_review" as const };
     }
   }
   const now = new Date().toISOString();

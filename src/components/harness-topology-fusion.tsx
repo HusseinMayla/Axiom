@@ -33,6 +33,12 @@ export interface HarnessTopologyFusionProps {
   activeTask?: { state: string; objective: string } | null;
   automationState?: "running" | "frozen" | null;
   showSimulationControls?: boolean;
+  developerModel?: string;
+  engineerModel?: string;
+  maxSteps?: 30 | 60 | 90;
+  onDeveloperModelChange?: (model: string) => void;
+  onEngineerModelChange?: (model: string) => void;
+  onMaxStepsChange?: (steps: 30 | 60 | 90) => void;
 }
 
 export interface QueuedItem {
@@ -49,12 +55,19 @@ export function HarnessTopologyFusion({
   activeTask = null,
   automationState = "running",
   showSimulationControls = false,
+  developerModel,
+  engineerModel,
+  maxSteps,
+  onDeveloperModelChange,
+  onEngineerModelChange,
+  onMaxStepsChange,
 }: HarnessTopologyFusionProps) {
   const [selectedNode, setSelectedNode] = useState<NodeId | null>("engineer");
   const simulatedState = openClarifications > 0 || activeTask?.state === "waiting_for_human_approval" ? "waiting_approval" : "running";
   const [selectedPacket, setSelectedPacket] = useState<PacketLog | null>(null);
   const [hoveredPacketId, setHoveredPacketId] = useState<string | null>(null);
   const [mounted, setMounted] = useState<boolean>(false);
+  const [showTelemetry, setShowTelemetry] = useState<boolean>(false);
 
   // Dynamic Agent Activity States
   const [agentStatuses, setAgentStatuses] = useState<Record<NodeId, AgentStatus>>({
@@ -70,6 +83,16 @@ export function HarnessTopologyFusion({
   const [developerProgress, setDeveloperProgress] = useState<number>(0);
   const [modelLabels, setModelLabels] = useState({ developer: "Gemini 3.1 Flash-Lite", engineer: "Gemini 3.1 Flash-Lite" });
   const [repositoryTree, setRepositoryTree] = useState<string[]>([]);
+
+  // Synchronize dynamic model settings from props
+  useEffect(() => {
+    if (developerModel || engineerModel) {
+      setModelLabels({
+        developer: developerModel === "gemini-3.5-flash" ? "Gemini 3.5 Flash" : "Gemini 3.1 Flash-Lite",
+        engineer: engineerModel === "gemini-3.5-flash" ? "Gemini 3.5 Flash" : "Gemini 3.1 Flash-Lite",
+      });
+    }
+  }, [developerModel, engineerModel]);
 
   // Dynamic DOM Refs for precise SVG Path Calculation
   const containerRef = useRef<HTMLDivElement>(null);
@@ -712,7 +735,21 @@ export function HarnessTopologyFusion({
                     {agentStatuses.engineer}
                   </span>
                 </h4>
-                <p className="mt-0.5 text-xs text-slate-300">{modelLabels.engineer}</p>
+                <div className="mt-1.5 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                  <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Model:</span>
+                  {onEngineerModelChange && engineerModel ? (
+                    <select
+                      value={engineerModel}
+                      onChange={(e) => onEngineerModelChange(e.target.value)}
+                      className="border border-blue-500/30 bg-blue-950/60 text-blue-200 px-2 py-0.5 rounded text-[11px] outline-none cursor-pointer hover:border-blue-400 transition-all font-mono font-bold"
+                    >
+                      <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
+                      <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+                    </select>
+                  ) : (
+                    <span className="text-xs text-slate-300 font-mono font-bold">{modelLabels.engineer}</span>
+                  )}
+                </div>
                 <div className="mt-3 flex items-center justify-between text-[11px] text-blue-200 bg-blue-950/70 border border-blue-800/50 rounded px-2.5 py-1">
                   <span>LISTEN: port 8080</span>
                   <span className={`font-bold shrink-0 ml-1 ${automationState === "frozen" ? "text-amber-400" : "text-emerald-400"}`}>
@@ -796,7 +833,40 @@ export function HarnessTopologyFusion({
                       {agentStatuses.developer}
                     </span>
                   </div>
-                  <p className="mt-1 text-[10px] text-emerald-300">{modelLabels.developer}</p>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-3" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Model:</span>
+                      {onDeveloperModelChange && developerModel ? (
+                        <select
+                          value={developerModel}
+                          onChange={(e) => onDeveloperModelChange(e.target.value)}
+                          className="border border-emerald-500/30 bg-emerald-950/60 text-emerald-200 px-2 py-0.5 rounded text-[11px] outline-none cursor-pointer hover:border-emerald-400 transition-all font-mono font-bold"
+                        >
+                          <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
+                          <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+                        </select>
+                      ) : (
+                        <span className="text-[10px] text-emerald-300 font-mono font-bold">{modelLabels.developer}</span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Effort:</span>
+                      {onMaxStepsChange && maxSteps ? (
+                        <select
+                          value={maxSteps}
+                          onChange={(e) => onMaxStepsChange(Number(e.target.value) as 30 | 60 | 90)}
+                          className="border border-emerald-500/30 bg-emerald-950/60 text-emerald-200 px-2 py-0.5 rounded text-[11px] outline-none cursor-pointer hover:border-emerald-400 transition-all font-mono font-bold"
+                        >
+                          <option value={30}>Low</option>
+                          <option value={60}>Medium</option>
+                          <option value={90}>High</option>
+                        </select>
+                      ) : (
+                        <span className="text-[10px] text-emerald-300 font-mono font-bold">{maxSteps} steps</span>
+                      )}
+                    </div>
+                  </div>
 
                   {/* DYNAMIC LIVE ACTIVITY HUD (Loading animation for editing/analyzing) */}
                   <div className="mt-3 space-y-2 rounded-lg bg-slate-950 p-2.5 border border-emerald-900/50">
@@ -855,102 +925,119 @@ export function HarnessTopologyFusion({
         </div>
       </div>
 
-      {/* REAL-TIME PACKET TELEMETRY CONSOLE & PAYLOAD INSPECTOR */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Packet Stream Feed */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900/90 p-4 backdrop-blur-md">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
-            <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-              <span>📡 Real-Time Packet Sniffer Log (tcpdump)</span>
-              {activeAnimations.length > 0 && (
-                <span className="rounded-full bg-purple-500/30 px-2 py-0.5 text-[9px] font-bold text-purple-300 border border-purple-500/50 animate-pulse">
-                  PLAYING QUEUED PACKET
-                </span>
-              )}
-            </h4>
-            <span className="text-[10px] text-emerald-400">{packetLogs.length} Packets Captured</span>
-          </div>
-
-          <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1 text-xs">
-            {packetLogs.map((pkt, idx) => {
-              const inFlight = isPacketInFlight(pkt.id);
-              const isSelected = selectedPacket?.id === pkt.id;
-              return (
-                <div
-                  key={`${pkt.id}-${idx}`}
-                  onClick={() => setSelectedPacket(pkt)}
-                  onMouseEnter={() => setHoveredPacketId(pkt.id)}
-                  onMouseLeave={() => setHoveredPacketId(null)}
-                  className={`cursor-pointer rounded p-2 transition-all flex items-center justify-between ${
-                    isSelected
-                      ? "bg-cyan-950/90 border border-cyan-400 text-cyan-200 shadow-md shadow-cyan-500/10"
-                      : "bg-slate-950/70 hover:bg-slate-800/80 text-slate-300 border border-transparent"
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded ${
-                      pkt.protocol === "HTTP/2" ? "bg-cyan-500/20 text-cyan-300" :
-                      pkt.protocol === "IPC" ? "bg-blue-500/20 text-blue-300" :
-                      pkt.protocol === "UDP" ? "bg-emerald-500/20 text-emerald-300" : "bg-purple-500/20 text-purple-300"
-                    }`}>
-                      {pkt.protocol}
-                    </span>
-                    <span className="font-bold text-slate-100">{pkt.type}</span>
-                    {inFlight && (
-                      <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-ping" title="Packet currently moving on canvas" />
-                    )}
-                  </div>
-                  <div className="flex items-center gap-3 text-[10px] text-slate-400 font-mono">
-                    <span suppressHydrationWarning>{pkt.timestamp}</span>
-                    <span className={`font-bold ${pkt.status === "OK" ? "text-emerald-400" : pkt.status === "ERROR" ? "text-red-400" : "text-amber-400"}`}>
-                      [{pkt.status}]
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Packet Hex/JSON Payload Inspector */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900/90 p-4 backdrop-blur-md">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
-            <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-              <span>🔍 Wireshark Payload Inspector</span>
-              {selectedPacket && isPacketInFlight(selectedPacket.id) && (
-                <span className="rounded bg-cyan-500/20 px-2 py-0.5 text-[9px] font-bold text-cyan-300 border border-cyan-500/40 animate-pulse">
-                  ⚡ STREAMING LIVE
-                </span>
-              )}
-            </h4>
-            <span className="text-[10px] font-mono text-cyan-400">{selectedPacket ? selectedPacket.id : "Click packet or line to inspect"}</span>
-          </div>
-
-          {selectedPacket ? (
-            <div className="space-y-2 text-xs font-mono">
-              <div className="grid grid-cols-2 gap-2 text-[11px] bg-slate-950 p-2.5 rounded border border-slate-800 text-slate-300">
-                <div><span className="text-slate-500">SRC:</span> <span className="text-cyan-300">{selectedPacket.source}</span></div>
-                <div><span className="text-slate-500">DST:</span> <span className="text-blue-300">{selectedPacket.destination}</span></div>
-                <div><span className="text-slate-500">TYPE:</span> <span className="text-emerald-300">{selectedPacket.type}</span></div>
-                <div><span className="text-slate-500">STATUS:</span> <span className="text-emerald-400">{selectedPacket.status}</span></div>
-              </div>
-              <div className="space-y-1">
-                <div className="text-[10px] text-slate-400 flex items-center justify-between">
-                  <span>PAYLOAD DECODED (JSON):</span>
-                  <span suppressHydrationWarning>{selectedPacket.timestamp}</span>
-                </div>
-                <pre className="rounded bg-slate-950 p-3 text-[11px] text-emerald-300 border border-slate-800 overflow-x-auto max-h-36">
-                  {selectedPacket.payload}
-                </pre>
-              </div>
-            </div>
-          ) : (
-            <div className="flex h-36 items-center justify-center text-xs text-slate-500 font-sans">
-              Click any line glow or entry in tcpdump to inspect payload.
-            </div>
-          )}
-        </div>
+      {/* Telemetry Expander Bar */}
+      <div className="flex justify-center mt-4">
+        <button
+          type="button"
+          onClick={() => setShowTelemetry(!showTelemetry)}
+          className={`px-4 py-2 rounded-lg text-xs font-mono font-bold tracking-wider uppercase border transition-all duration-300 flex items-center gap-2 ${
+            showTelemetry
+              ? "bg-purple-950/40 border-purple-500/40 text-purple-300 shadow-[0_0_15px_rgba(168,85,247,0.15)]"
+              : "bg-slate-900/60 border-slate-800 text-slate-400 hover:border-purple-500/40 hover:text-purple-300"
+          }`}
+        >
+          <span>{showTelemetry ? "Hide" : "Show"} Telemetry Stream</span>
+          <span className={`h-1.5 w-1.5 rounded-full ${showTelemetry ? "bg-purple-400 animate-pulse" : "bg-slate-600"}`} />
+        </button>
       </div>
+
+      {showTelemetry && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
+          {/* Packet Stream Feed */}
+          <div className="rounded-xl border border-slate-800 bg-slate-900/90 p-4 backdrop-blur-md">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
+              <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                <span>📡 Real-Time Packet Sniffer Log (tcpdump)</span>
+                {activeAnimations.length > 0 && (
+                  <span className="rounded-full bg-purple-500/30 px-2 py-0.5 text-[9px] font-bold text-purple-300 border border-purple-500/50 animate-pulse">
+                    PLAYING QUEUED PACKET
+                  </span>
+                )}
+              </h4>
+              <span className="text-[10px] text-emerald-400">{packetLogs.length} Packets Captured</span>
+            </div>
+
+            <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1 text-xs">
+              {packetLogs.map((pkt, idx) => {
+                const inFlight = isPacketInFlight(pkt.id);
+                const isSelected = selectedPacket?.id === pkt.id;
+                return (
+                  <div
+                    key={`${pkt.id}-${idx}`}
+                    onClick={() => setSelectedPacket(pkt)}
+                    onMouseEnter={() => setHoveredPacketId(pkt.id)}
+                    onMouseLeave={() => setHoveredPacketId(null)}
+                    className={`cursor-pointer rounded p-2 transition-all flex items-center justify-between ${
+                      isSelected
+                        ? "bg-cyan-950/90 border border-cyan-400 text-cyan-200 shadow-md shadow-cyan-500/10"
+                        : "bg-slate-950/70 hover:bg-slate-800/80 text-slate-300 border border-transparent"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded ${
+                        pkt.protocol === "HTTP/2" ? "bg-cyan-500/20 text-cyan-300" :
+                        pkt.protocol === "IPC" ? "bg-blue-500/20 text-blue-300" :
+                        pkt.protocol === "UDP" ? "bg-emerald-500/20 text-emerald-300" : "bg-purple-500/20 text-purple-300"
+                      }`}>
+                        {pkt.protocol}
+                      </span>
+                      <span className="font-bold text-slate-100">{pkt.type}</span>
+                      {inFlight && (
+                        <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-ping" title="Packet currently moving on canvas" />
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 text-[10px] text-slate-400 font-mono">
+                      <span suppressHydrationWarning>{pkt.timestamp}</span>
+                      <span className={`font-bold ${pkt.status === "OK" ? "text-emerald-400" : pkt.status === "ERROR" ? "text-red-400" : "text-amber-400"}`}>
+                        [{pkt.status}]
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Packet Hex/JSON Payload Inspector */}
+          <div className="rounded-xl border border-slate-800 bg-slate-900/90 p-4 backdrop-blur-md">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
+              <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                <span>🔍 Wireshark Payload Inspector</span>
+                {selectedPacket && isPacketInFlight(selectedPacket.id) && (
+                  <span className="rounded bg-cyan-500/20 px-2 py-0.5 text-[9px] font-bold text-cyan-300 border border-cyan-500/40 animate-pulse">
+                    ⚡ STREAMING LIVE
+                  </span>
+                )}
+              </h4>
+              <span className="text-[10px] font-mono text-cyan-400">{selectedPacket ? selectedPacket.id : "Click packet or line to inspect"}</span>
+            </div>
+
+            {selectedPacket ? (
+              <div className="space-y-2 text-xs font-mono">
+                <div className="grid grid-cols-2 gap-2 text-[11px] bg-slate-950 p-2.5 rounded border border-slate-800 text-slate-300">
+                  <div><span className="text-slate-500">SRC:</span> <span className="text-cyan-300">{selectedPacket.source}</span></div>
+                  <div><span className="text-slate-500">DST:</span> <span className="text-blue-300">{selectedPacket.destination}</span></div>
+                  <div><span className="text-slate-500">TYPE:</span> <span className="text-emerald-300">{selectedPacket.type}</span></div>
+                  <div><span className="text-slate-500">STATUS:</span> <span className="text-emerald-400">{selectedPacket.status}</span></div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-[10px] text-slate-400 flex items-center justify-between">
+                    <span>PAYLOAD DECODED (JSON):</span>
+                    <span suppressHydrationWarning>{selectedPacket.timestamp}</span>
+                  </div>
+                  <pre className="rounded bg-slate-950 p-3 text-[11px] text-emerald-300 border border-slate-800 overflow-x-auto max-h-36">
+                    {selectedPacket.payload}
+                  </pre>
+                </div>
+              </div>
+            ) : (
+              <div className="flex h-36 items-center justify-center text-xs text-slate-500 font-sans">
+                Click any line glow or entry in tcpdump to inspect payload.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

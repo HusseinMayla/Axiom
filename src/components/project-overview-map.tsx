@@ -536,6 +536,10 @@ export function ProjectOverviewMap({
               <button className="text-button" type="button" onClick={collapseAllFolderTree}>
                 Collapse All
               </button>
+              <span className="separator">|</span>
+              <button className="text-button" type="button" onClick={() => handleBranchChange(selectedBranch)} disabled={isLoadingTree}>
+                Refresh
+              </button>
             </div>
           </div>
 

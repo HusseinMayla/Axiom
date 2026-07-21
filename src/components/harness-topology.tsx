@@ -9,12 +9,24 @@ export function HarnessTopology({
   openClarifications,
   activeTask,
   automationState,
+  developerModel,
+  engineerModel,
+  maxSteps,
+  onDeveloperModelChange,
+  onEngineerModelChange,
+  onMaxStepsChange,
 }: {
   projectId?: string;
   hasContext: boolean;
   openClarifications: number;
   activeTask: { state: string; objective: string } | null;
   automationState: "running" | "frozen" | null;
+  developerModel?: string;
+  engineerModel?: string;
+  maxSteps?: 30 | 60 | 90;
+  onDeveloperModelChange?: (model: string) => void;
+  onEngineerModelChange?: (model: string) => void;
+  onMaxStepsChange?: (steps: 30 | 60 | 90) => void;
 }) {
   return (
     <section className="space-y-4">
@@ -38,6 +50,12 @@ export function HarnessTopology({
         activeTask={activeTask}
         automationState={automationState}
         showSimulationControls={false}
+        developerModel={developerModel}
+        engineerModel={engineerModel}
+        maxSteps={maxSteps}
+        onDeveloperModelChange={onDeveloperModelChange}
+        onEngineerModelChange={onEngineerModelChange}
+        onMaxStepsChange={onMaxStepsChange}
       />
     </section>
   );

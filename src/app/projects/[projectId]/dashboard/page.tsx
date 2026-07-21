@@ -31,22 +31,16 @@ export default async function ProjectDashboardPage({
 
   const { data: projects } = await supabase.from("projects").select("id, name").order("updated_at", { ascending: false });
 
-  const [{ data: tasks }, { data: questions }, { data: features }, { data: featureNodes }, { data: humanTodos }, { data: events }, { data: executionEvents }] = await Promise.all([
+  const [{ data: tasks }, { data: questions }, { data: features }, { data: featureNodes }, { data: humanTodos }] = await Promise.all([
     supabase.from("tasks").select("id, state, objective, human_summary, human_actions, developer_report, execution_logs, review_feedback, execution_started_at, branch_name, head_sha, archived_at, features(name)").eq("project_id", projectId).order("created_at"),
     supabase.from("clarification_questions").select("id, question, rationale").eq("project_id", projectId).eq("status", "open").order("created_at"),
     supabase.from("features").select("id, name, status, context_node_id").eq("project_id", projectId).in("status", ["active", "on_hold", "completed", "needs_clarification"]).order("priority"),
     supabase.from("context_nodes").select("id, content").eq("project_id", projectId).eq("kind", "feature").in("status", ["draft", "approved"]),
     supabase.from("human_todos").select("id, title, rationale, suggested_action, human_comment").eq("project_id", projectId).eq("status", "open").order("created_at"),
-    supabase.from("events").select("id, actor_type, event_type, payload, created_at").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
-    supabase.from("task_execution_events").select("id, tool_name, status, created_at, finished_at").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
   ]);
   const featureSnapshots = (features ?? []).map((feature) => featureSnapshot(feature, featureNodes ?? []));
   const openPrerequisites = (tasks ?? []).filter((task) => !task.archived_at).flatMap((task) => normalizeHumanPrerequisites(task.human_actions).filter((action) => !action.optional && !action.acknowledgedAt));
   const attentionCount = (tasks ?? []).filter((task) => !task.archived_at && ["waiting_for_approval", "planned", "failed"].includes(task.state)).length + (questions?.length ?? 0) + openPrerequisites.length + (humanTodos?.length ?? 0);
-  const activity = [
-    ...(events ?? []).map((event) => ({ id: "event-" + event.id, source: "event" as const, name: event.event_type, actor: event.actor_type, status: null, payload: event.payload, createdAt: event.created_at })),
-    ...(executionEvents ?? []).map((event) => ({ id: "execution-" + event.id, source: "execution" as const, name: event.tool_name, actor: "developer", status: event.status, payload: null, createdAt: event.finished_at ?? event.created_at })),
-  ].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()).slice(0, 14);
 
   return (
     <div className="project-workspace">
@@ -59,7 +53,7 @@ export default async function ProjectDashboardPage({
           </div>
           <span className="workspace-state">● Human control active</span>
         </div>
-        {project.state === "active" && <DashboardActionCenter projectId={project.id} automationState={project.automation_state as "running" | "frozen" | null} activity={activity} planningFeatures={(features ?? []).filter((feature) => feature.status === "active").map((feature) => ({ id: feature.id, name: feature.name }))} featureSnapshots={featureSnapshots} humanTodos={(humanTodos ?? []).map((todo) => ({ id: todo.id, title: todo.title, rationale: todo.rationale, suggestedAction: todo.suggested_action, humanComment: todo.human_comment }))} tasks={(tasks ?? []).filter((task) => !task.archived_at).map((task) => ({ id: task.id, state: task.state, objective: task.objective, humanSummary: task.human_summary, featureName: (task.features as { name?: string } | null)?.name ?? "Project work", branchName: task.branch_name, headSha: task.head_sha, developerReport: developerReportFromUnknown(task.developer_report), reviewFeedback: task.review_feedback, executionStartedAt: task.execution_started_at, executionLogs: executionLogsFromUnknown(task.execution_logs), humanActions: normalizeHumanPrerequisites(task.human_actions) }))} clarifications={questions ?? []} />}
+        {project.state === "active" && <DashboardActionCenter projectId={project.id} automationState={project.automation_state as "running" | "frozen" | null} planningFeatures={(features ?? []).filter((feature) => feature.status === "active").map((feature) => ({ id: feature.id, name: feature.name }))} featureSnapshots={featureSnapshots} humanTodos={(humanTodos ?? []).map((todo) => ({ id: todo.id, title: todo.title, rationale: todo.rationale, suggestedAction: todo.suggested_action, humanComment: todo.human_comment }))} tasks={(tasks ?? []).filter((task) => !task.archived_at).map((task) => ({ id: task.id, state: task.state, objective: task.objective, humanSummary: task.human_summary, featureName: (task.features as { name?: string } | null)?.name ?? "Project work", branchName: task.branch_name, headSha: task.head_sha, developerReport: developerReportFromUnknown(task.developer_report), reviewFeedback: task.review_feedback, executionStartedAt: task.execution_started_at, executionLogs: executionLogsFromUnknown(task.execution_logs), humanActions: normalizeHumanPrerequisites(task.human_actions) }))} clarifications={questions ?? []} />}
       </main>
     </div>
   );

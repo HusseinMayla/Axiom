@@ -22,9 +22,8 @@ export type DashboardClarification = { id: string; question: string; rationale: 
 export type FeatureSnapshot = { id: string; name: string; state: string; summary: string; detail: string[] };
 export type HumanTodo = { id: string; title: string; rationale: string; suggestedAction: string; humanComment: string | null };
 export type PlanningFeature = { id: string; name: string };
-export type DashboardActivity = { id: string; source: "event" | "execution"; name: string; actor: string; status: string | null; payload: unknown; createdAt: string };
 
-export function DashboardActionCenter({ projectId, tasks, clarifications, featureSnapshots, humanTodos, planningFeatures, activity, automationState }: { projectId: string; tasks: DashboardTask[]; clarifications: DashboardClarification[]; featureSnapshots: FeatureSnapshot[]; humanTodos: HumanTodo[]; planningFeatures: PlanningFeature[]; activity: DashboardActivity[]; automationState: "running" | "frozen" | null }) {
+export function DashboardActionCenter({ projectId, tasks, clarifications, featureSnapshots, humanTodos, planningFeatures, automationState }: { projectId: string; tasks: DashboardTask[]; clarifications: DashboardClarification[]; featureSnapshots: FeatureSnapshot[]; humanTodos: HumanTodo[]; planningFeatures: PlanningFeature[]; automationState: "running" | "frozen" | null }) {
   const router = useRouter();
   const [pending, setPending] = useState<string | null>(null);
   const [message, setMessage] = useState("");
@@ -133,7 +132,6 @@ export function DashboardActionCenter({ projectId, tasks, clarifications, featur
 
   return <>
     <section className="dashboard-inbox dashboard-inbox-header" aria-label="Human control status"><div className="inbox-status-grid"><SystemStatus tasks={tasks} clarifications={clarifications} /><InboxStatus label="Task proposals" count={proposals.length} empty="No bounded task proposal is waiting." tone="blue" /><InboxStatus label="Clarifications" count={clarifications.length} empty="Project context has no open question." tone="amber" /><InboxStatus label="Prerequisites" count={prerequisites.length} empty="No required action is blocking work." tone="cyan" /></div>{message ? <p className="form-note dashboard-message">{message}</p> : null}</section>
-    <AxiomActivityFeed activity={activity} />
     <section className="dashboard-control-grid"><div className="dashboard-control-left"><section className="dashboard-decision-zone"><div className="dashboard-section-heading"><div><p className="eyebrow">{primary ? "ACTION REQUIRED" : "HUMAN DECISION INBOX"}</p>{primary ? <h2>Your next decision</h2> : null}</div>{primary ? <span className="decision-count">{items.length} OPEN</span> : null}</div>{primary ? renderItem(primary, true) : <article className="decision-empty"><strong>Nothing needs a human decision right now.</strong><p>When Axiom needs a proposal approval, clarification, or prerequisite, it will appear here first.</p></article>}</section>{remaining.length > 0 ? <section className="dashboard-inbox"><div className="dashboard-section-heading"><div><p className="eyebrow">ACTION INBOX</p><h2>Other pending decisions</h2></div></div><div className="decision-inbox-list">{remaining.map((item) => renderItem(item))}</div></section> : null}<HumanWorklist projectId={projectId} todos={humanTodos} comments={todoComments} setComments={setTodoComments} pending={pending} setPending={setPending} setMessage={setMessage} /></div><ActiveTask projectId={projectId} task={activeTask} feedback={feedback} setFeedback={setFeedback} pending={pending} updateTask={updateTask} request={request} manualControlsEnabled={manualControlsEnabled} /></section>
     <ExecutionQueue projectId={projectId} tasks={runnableTasks} features={planningFeatures} hasActiveTask={Boolean(activeTask)} manualControlsEnabled={manualControlsEnabled} pending={pending} request={request} message={message} />
     <section className="feature-delivery-snapshot"><div className="dashboard-section-heading"><div><p className="eyebrow">PROJECT FEATURES</p><h2>Project features</h2></div></div>{featureSnapshots.length ? <div className="feature-snapshot-grid">{featureSnapshots.map((feature) => <article className="feature-snapshot-card" key={feature.id}><div><span className={`feature-state ${feature.state}`}>{feature.state.replaceAll("_", " ")}</span><h3>{feature.name}</h3></div><p>{feature.summary}</p>{feature.detail.length ? <details><summary>Details</summary><ul>{feature.detail.slice(0, 6).map((detail) => <li key={detail}>{detail}</li>)}</ul></details> : null}</article>)}</div> : <article className="feature-snapshot-empty"><strong>No approved feature is ready to report yet.</strong><p>Once a feature has active context, Axiom will show a one-sentence delivery summary here.</p></article>}</section>
@@ -153,65 +151,6 @@ function validationOutcomeMessage(payload: Record<string, unknown>) {
   return "Axiom completed the validation check.";
 }
 
-function AxiomActivityFeed({ activity }: { activity: DashboardActivity[] }) {
-  return <section className="axiom-activity"><div className="dashboard-section-heading"><div><p className="eyebrow">LIVE AXIOM ACTIVITY</p><h2>What Axiom is doing</h2></div><span className="activity-live-dot">LIVE</span></div>{activity.length ? <ol>{activity.map((item) => <li key={item.id}><i className={item.status === "failed" ? "failed" : item.source === "execution" ? "working" : ""} /><div><strong>{activityTitle(item)}</strong><p>{activityDetail(item)}</p></div><time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time></li>)}</ol> : <article><strong>No Axiom activity has been recorded yet.</strong><p>Planner calls, developer steps, validation, and automation decisions will stream here.</p></article>}</section>;
-}
-
-function activityTitle(item: DashboardActivity) {
-  if (item.source === "execution") {
-    const workerSteps: Record<string, string> = {
-      prepare_dependencies: "Developer agent is preparing the workspace",
-      inspect_files: "Developer agent inspected scoped files",
-      run_command: "Developer agent ran an implementation command",
-      write_files: "Developer agent wrote scoped files",
-      run_validation: "Developer agent ran task validation",
-      finish_task: "Developer agent reported completion",
-      final_validation: "Axiom ran final validation",
-      auto_finish: "Axiom finalized the developer run",
-      invalid_tool_call: "Developer agent needed a tool-call correction",
-      cancelled: "Developer run was cancelled",
-    };
-    return workerSteps[item.name] ?? "Developer agent recorded a work step";
-  }
-  const labels: Record<string, string> = {
-    planning_triggered: "AI planner called",
-    planning_clarification: "AI planner requested clarification",
-    planning_no_work: "AI planner found no task to propose",
-    task_proposed: "AI planner proposed a task",
-    automation_execution_started: "Developer agent started",
-    automation_evaluation_started: "AI reviewer started",
-    automation_evaluated: "AI reviewer finished",
-    automation_claimed: "Automation claimed work",
-    automation_skipped: "Automation checked eligibility",
-    automation_rate_limited: "AI provider rate limit",
-    automation_wake_failed: "Automation could not start after unfreezing",
-    automation_cycle_started: "Automation cycle started",
-    automation_cycle_completed: "Automation cycle completed",
-    automation_cycle_failed: "Automation cycle failed",
-    automation_planning_started: "Automation began planning",
-    automation_frozen: "Automatic flow frozen",
-    automation_continued: "Automatic flow resumed",
-    human_todos_generated: "AI refreshed your to-do list",
-    task_approved: "Task approved by you",
-    task_feedback: "You sent task feedback",
-    task_archived: "Task was removed from active work",
-    human_prerequisite_acknowledged: "Human prerequisite was completed",
-    context_approved: "Project context was approved",
-    repository_scanned: "Repository scan completed",
-  };
-  return labels[item.name] ?? "Axiom recorded a project event";
-}
-
-function activityDetail(item: DashboardActivity) {
-  if (item.source === "execution") return item.status === "failed" ? "Worker step failed; inspect the active task for the recorded outcome." : item.status === "running" ? "Worker step is in progress." : "Worker step completed.";
-  const payload = (item.payload ?? {}) as Record<string, unknown>;
-  for (const key of ["reason", "summary", "message", "question"]) if (typeof payload[key] === "string" && payload[key]) return payload[key] as string;
-  if (typeof payload.action === "string") {
-    const actions: Record<string, string> = { propose: "Axiom is checking whether a bounded task should be proposed.", execute: "Axiom is preparing eligible work for execution.", evaluate: "Axiom is preparing completed work for AI review." };
-    return actions[payload.action] ?? "Axiom updated the automation state.";
-  }
-  return item.actor === "ai" ? "Axiom completed an AI orchestration step." : "Automation state changed.";
-}
 
 function ActiveTask({ projectId, task, feedback, setFeedback, pending, updateTask, request, manualControlsEnabled }: { projectId: string; task: DashboardTask | null; feedback: Record<string, string>; setFeedback: (value: Record<string, string>) => void; pending: string | null; updateTask: (key: string, taskId: string, body: Record<string, unknown>) => Promise<void>; request: (key: string, url: string, body?: unknown) => Promise<any>; manualControlsEnabled: boolean }) {
   if (!task) return <aside className="active-task-panel empty"><p className="eyebrow">ACTIVE TASK</p><h2>No task is active</h2><p>Approve a proposal, then let automatic flow continue—or freeze it to choose a queued task yourself.</p></aside>;
@@ -220,7 +159,7 @@ function ActiveTask({ projectId, task, feedback, setFeedback, pending, updateTas
   const recoveryKey = `recover-${task.id}`;
   const cancelKey = `cancel-${task.id}`;
   const archiveKey = `archive-${task.id}`;
-  return <aside className={`active-task-panel ${task.state}`}><p className="eyebrow">ACTIVE TASK</p><span className={`task-state ${task.state}`}>{task.state.replaceAll("_", " ")}</span><h2>{task.objective}</h2><p>{task.developerReport?.summary ?? task.humanSummary}</p><small>{task.featureName}{task.branchName ? ` · ${task.branchName}` : ""}{task.executionStartedAt ? ` · started ${new Date(task.executionStartedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}</small>{task.state === "pending_review" ? <p className="active-task-gate">{manualControlsEnabled ? "Execution finished. Validation is waiting for your command while automatic flow is frozen." : "Execution finished. Automatic flow will send this task to AI validation."}</p> : null}{task.state === "failed" ? <p className="active-task-gate">Automatic flow is frozen. This failed task stays here until you return it to the queue or remove it.</p> : null}<ExecutionDetails task={task} open={task.state === "running" || task.state === "failed"} />{task.state === "running" ? <button className="button secondary task-cancel-button" disabled={pending === cancelKey} onClick={() => updateTask(cancelKey, task.id, { resetExecution: true })}>{pending === cancelKey ? "Cancelling…" : "Cancel task"}</button> : null}{task.state === "pending_review" ? <button className="button secondary" disabled={!manualControlsEnabled || pending === validationKey} title={manualControlsEnabled ? "Ask the AI Reviewer to validate this completed task." : "Freeze automatic flow to request manual AI validation."} onClick={() => request(validationKey, `/api/projects/${projectId}/tasks/${task.id}/review`)}>{pending === validationKey ? "Validating…" : "Ask AI to validate"}</button> : null}{task.state === "failed" ? <div><button className="button" disabled={pending === recoveryKey} onClick={() => updateTask(recoveryKey, task.id, { resetExecution: true })}>{pending === recoveryKey ? "Returning…" : "Return to queue"}</button><button className="button secondary" disabled={pending === archiveKey} onClick={() => updateTask(archiveKey, task.id, { archive: true })}>{pending === archiveKey ? "Removing…" : "Remove task"}</button></div> : null}{task.state === "waiting_for_human_approval" ? <><textarea value={feedback[task.id] ?? ""} onChange={(event) => setFeedback({ ...feedback, [task.id]: event.target.value })} placeholder="Feedback is only needed to request changes." /><div><button className="button decision-approve" disabled={pending === reviewKey} onClick={() => updateTask(reviewKey, task.id, { mergeHumanApproval: true })}>{pending === reviewKey ? "Applying…" : "Approve & merge"}</button><button className="button secondary" disabled={pending === `${reviewKey}-redo`} onClick={() => updateTask(`${reviewKey}-redo`, task.id, { rejectHumanApproval: true, feedback: feedback[task.id] || "Please revise the implementation." })}>{pending === `${reviewKey}-redo` ? "Applying…" : "Request changes"}</button></div></> : null}</aside>;
+  return <aside className={`active-task-panel ${task.state}`}><p className="eyebrow">ACTIVE TASK</p><span className={`task-state ${task.state}`}>{task.state.replaceAll("_", " ")}</span><h2>{task.objective}</h2><p>{task.developerReport?.summary ?? task.humanSummary}</p><small>{task.featureName}{task.branchName ? ` · ${task.branchName}` : ""}{task.executionStartedAt ? ` · started ${new Date(task.executionStartedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}</small>{task.state === "pending_review" ? <p className="active-task-gate">{manualControlsEnabled ? "Execution finished. Validation is waiting for your command while automatic flow is frozen." : "Execution finished. Automatic flow will send this task to AI validation."}</p> : null}{task.state === "failed" ? <p className="active-task-gate">Automatic flow is frozen. This failed task stays here until you return it to the queue or remove it.</p> : null}{task.state === "running" ? (<div className="active-task-step"><div className="step-loader" /><span className="step-label">{getCurrentStep(task)}</span></div>) : (<ExecutionDetails task={task} open={task.state === "failed"} />)}{task.state === "running" ? <button className="button secondary task-cancel-button" disabled={pending === cancelKey} onClick={() => updateTask(cancelKey, task.id, { resetExecution: true })}>{pending === cancelKey ? "Cancelling…" : "Cancel task"}</button> : null}{task.state === "pending_review" ? <button className={manualControlsEnabled ? "button secondary" : "button secondary automation-wait-button"} disabled={!manualControlsEnabled || pending === validationKey} title={manualControlsEnabled ? "Ask the AI Reviewer to validate this completed task." : "Automation will submit this task to the AI Reviewer."} onClick={() => request(validationKey, `/api/projects/${projectId}/tasks/${task.id}/review`)}>{pending === validationKey ? "Validating…" : manualControlsEnabled ? "Ask AI to validate" : <><i aria-hidden />Waiting for AI validation…</>}</button> : null}{task.state === "failed" ? <div><button className="button" disabled={pending === recoveryKey} onClick={() => updateTask(recoveryKey, task.id, { resetExecution: true })}>{pending === recoveryKey ? "Returning…" : "Return to queue"}</button><button className="button secondary" disabled={pending === archiveKey} onClick={() => updateTask(archiveKey, task.id, { archive: true })}>{pending === archiveKey ? "Removing…" : "Remove task"}</button></div> : null}{task.state === "waiting_for_human_approval" ? <><textarea value={feedback[task.id] ?? ""} onChange={(event) => setFeedback({ ...feedback, [task.id]: event.target.value })} placeholder="Feedback is only needed to request changes." /><div><button className="button decision-approve" disabled={pending === reviewKey} onClick={() => updateTask(reviewKey, task.id, { mergeHumanApproval: true })}>{pending === reviewKey ? "Applying…" : "Approve & merge"}</button><button className="button secondary" disabled={pending === `${reviewKey}-redo`} onClick={() => updateTask(`${reviewKey}-redo`, task.id, { rejectHumanApproval: true, feedback: feedback[task.id] || "Please revise the implementation." })}>{pending === `${reviewKey}-redo` ? "Applying…" : "Request changes"}</button></div></> : null}</aside>;
 }
 
 function ExecutionDetails({ task, open = false }: { task: DashboardTask; open?: boolean }) {
@@ -243,8 +182,54 @@ function failureReason(task: DashboardTask) {
   return task.executionLogs.slice().reverse().find((log) => log.exitCode !== 0)?.output.slice(-900) ?? null;
 }
 
+function getCurrentStep(task: DashboardTask) {
+  if (!task.executionLogs || !task.executionLogs.length) {
+    return "Initializing task execution...";
+  }
+  const lastLog = task.executionLogs[task.executionLogs.length - 1];
+  const command = lastLog.command;
+  if (command === "prepare_dependencies") {
+    return "Preparing workspace dependencies...";
+  }
+  if (command.startsWith("agent.inspect")) {
+    const rawPaths = command.replace("agent.inspect", "").trim();
+    if (rawPaths) {
+      const paths = rawPaths.split(",").map(p => {
+        const parts = p.trim().split(/[/\\]/);
+        return parts[parts.length - 1];
+      }).join(", ");
+      return `Analyzing ${paths}...`;
+    }
+    return "Analyzing codebase...";
+  }
+  if (command.startsWith("agent.write")) {
+    const rawPaths = command.replace("agent.write", "").trim();
+    if (rawPaths) {
+      const paths = rawPaths.split(",").map(p => {
+        const parts = p.trim().split(/[/\\]/);
+        return parts[parts.length - 1];
+      }).join(", ");
+      return `Editing ${paths}...`;
+    }
+    return "Editing files...";
+  }
+  if (command.startsWith("agent.validation")) {
+    return "Running task validation...";
+  }
+  if (command === "agent.finish") {
+    return "Reporting task completion...";
+  }
+  if (command === "agent.auto_finish") {
+    return "Auto-completing developer run...";
+  }
+  if (command.startsWith("orchestrator")) {
+    return "Executing harness steps...";
+  }
+  return `Running command: ${command}...`;
+}
+
 function ExecutionQueue({ projectId, tasks, features, hasActiveTask, manualControlsEnabled, pending, request, message }: { projectId: string; tasks: DashboardTask[]; features: PlanningFeature[]; hasActiveTask: boolean; manualControlsEnabled: boolean; pending: string | null; request: (key: string, url: string, body?: unknown) => Promise<any>; message: string }) {
-  return <section className="execution-queue"><div className="dashboard-section-heading"><div><p className="eyebrow">EXECUTION QUEUE</p><h2>Ready to run</h2></div><div className="queue-heading-actions"><TaskProposalComposer projectId={projectId} features={features} pending={pending} request={request} message={message} /><span className={manualControlsEnabled ? "manual-mode-badge enabled" : "manual-mode-badge"}>{manualControlsEnabled ? "MANUAL START AVAILABLE" : "AUTOMATIC FLOW OWNS EXECUTION"}</span></div></div>{tasks.length ? <div className="execution-queue-track">{tasks.map((task, index) => { const key = `start-${task.id}`; const disabled = !manualControlsEnabled || hasActiveTask || pending === key; return <article className="execution-queue-card" key={task.id}><span>#{index + 1}</span><strong>{task.objective}</strong><small>{task.featureName} · {task.state.replaceAll("_", " ")}</small><button className="button secondary" disabled={disabled} title={!manualControlsEnabled ? "Freeze automatic flow to start a selected task." : hasActiveTask ? "Finish or resolve the active task before starting another." : "Start this task manually."} onClick={() => request(key, `/api/projects/${projectId}/execute-next`, { taskId: task.id })}>{pending === key ? "Starting…" : "Start"}</button></article>; })}</div> : <article className="task-monitor-empty"><strong>No task is ready to run.</strong><p>Approved tasks will appear here in execution order.</p></article>}</section>;
+  return <section className="execution-queue"><div className="dashboard-section-heading"><div><p className="eyebrow">EXECUTION QUEUE</p><h2>Ready to run</h2></div><div className="queue-heading-actions"><TaskProposalComposer projectId={projectId} features={features} pending={pending} request={request} message={message} /><span className={manualControlsEnabled ? "manual-mode-badge enabled" : "manual-mode-badge"}>{manualControlsEnabled ? "MANUAL START AVAILABLE" : "AUTOMATIC FLOW OWNS EXECUTION"}</span></div></div>{tasks.length ? <div className="execution-queue-track">{tasks.map((task, index) => { const key = `start-${task.id}`; const disabled = !manualControlsEnabled || hasActiveTask || pending === key; const waitingForAutomation = !manualControlsEnabled && !hasActiveTask; return <article className="execution-queue-card" key={task.id}><span>#{index + 1}</span><strong>{task.objective}</strong><small>{task.featureName} · {task.state.replaceAll("_", " ")}</small><button className={waitingForAutomation ? "button secondary automation-wait-button" : "button secondary"} disabled={disabled} title={!manualControlsEnabled ? "Automation will start this task when the delivery lane is available." : hasActiveTask ? "Finish or resolve the active task before starting another." : "Start this task manually."} onClick={() => request(key, `/api/projects/${projectId}/execute-next`, { taskId: task.id })}>{pending === key ? "Starting…" : waitingForAutomation ? <><i aria-hidden />Queued for Axiom…</> : "Start"}</button></article>; })}</div> : <article className="task-monitor-empty"><strong>No task is ready to run.</strong><p>Approved tasks will appear here in execution order.</p></article>}</section>;
 }
 
 function TaskProposalComposer({ projectId, features, pending, request, message }: { projectId: string; features: PlanningFeature[]; pending: string | null; request: (key: string, url: string, body?: unknown) => Promise<any>; message: string }) {

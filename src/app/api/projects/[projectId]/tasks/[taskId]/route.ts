@@ -1,8 +1,10 @@
 import { z } from "zod";
+import { after } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { deleteRepositoryBranch, type AvailableRepository } from "@/lib/github/app";
 import { normalizeHumanPrerequisites, serializeHumanPrerequisites } from "@/lib/human-prerequisites";
 import { cancelActiveRun } from "@/lib/execution/active-run";
+import { runAutomationCycle } from "@/lib/automation-cycle";
 
 const updateTaskSchema = z.object({
   approve: z.boolean().optional(),
@@ -104,6 +106,21 @@ export async function PATCH(
 
   const { error } = await supabase.from("tasks").update(update).eq("id", taskId);
   if (error) return Response.json({ error: error.message }, { status: 500 });
+
+  // A human approval is a durable automation wake-up, not a cue to wait for the
+  // next browser polling interval before starting eligible work.
+  if (parsed.data.approve) {
+    after(async () => {
+      const { data: project } = await supabase.from("projects").select("automation_state").eq("id", projectId).maybeSingle();
+      if (project?.automation_state !== "running") return;
+      try {
+        const results = await runAutomationCycle({ supabase, projectId, owner: "task-approved-" + taskId + "-" + user.id });
+        await supabase.from("events").insert({ project_id: projectId, actor_type: "system", event_type: "automation_woken_by_approval", payload: { task_id: taskId, message: "Task approval immediately woke automation.", results } });
+      } catch (wakeError) {
+        await supabase.from("events").insert({ project_id: projectId, actor_type: "system", event_type: "automation_wake_failed", payload: { task_id: taskId, reason: wakeError instanceof Error ? wakeError.message : "Automation wake-up failed." } });
+      }
+    });
+  }
 
   let branchCleanupWarning: string | null = null;
   if ((parsed.data.archive || parsed.data.resetExecution || parsed.data.mergeHumanApproval || parsed.data.rejectHumanApproval) && task.branch_name && repository) {
