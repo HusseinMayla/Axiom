@@ -7,6 +7,10 @@ type CommandResult = {
   stderr: string;
 };
 
+export type DockerAvailability =
+  | { available: true; version: string }
+  | { available: false; reason: string; diagnostic: string };
+
 const MAX_OUTPUT_CHARS = 24_000;
 const WINDOWS_DOCKER_PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe";
 const WINDOWS_DOCKER_BIN = "C:\\Program Files\\Docker\\Docker\\resources\\bin";
@@ -50,15 +54,17 @@ function run(command: string, args: string[], timeoutMs = 30_000, environment?: 
   });
 }
 
-export async function dockerAvailability() {
+export async function dockerAvailability(): Promise<DockerAvailability> {
   try {
     const result = await run(dockerCommand(), ["info", "--format", "{{.ServerVersion}}"], 8_000);
     if (result.exitCode === 0) return { available: true, version: result.stdout.trim() };
-    console.warn("Axiom could not reach the Docker execution host:", sanitize(result.stderr || result.stdout));
-    return { available: false, reason: DOCKER_HOST_UNAVAILABLE };
+    const diagnostic = sanitize(result.stderr || result.stdout || "docker info exited with code " + result.exitCode + ".");
+    console.warn("Axiom could not reach the Docker execution host:", diagnostic);
+    return { available: false, reason: DOCKER_HOST_UNAVAILABLE, diagnostic };
   } catch (error) {
-    console.warn("Axiom could not invoke Docker on the execution host:", error);
-    return { available: false, reason: DOCKER_HOST_UNAVAILABLE };
+    const diagnostic = sanitize(error instanceof Error ? error.message : String(error));
+    console.warn("Axiom could not invoke Docker on the execution host:", diagnostic);
+    return { available: false, reason: DOCKER_HOST_UNAVAILABLE, diagnostic };
   }
 }
 

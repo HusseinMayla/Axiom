@@ -36,7 +36,21 @@ type TaskRecord = {
 export async function executeNextTask(supabase: SupabaseClient, projectId: string, trigger: "human" | "automation" = "human", requestedTaskId?: string) {
 
   const availability = await dockerAvailability();
-  if (!availability.available) return Response.json({ error: availability.reason }, { status: 503 });
+  if (!availability.available) {
+    const deployedOnVercel = process.env.VERCEL === "1";
+    console.error("Axiom execution host is unavailable", {
+      projectId,
+      requestedTaskId,
+      host: deployedOnVercel ? "vercel" : "local",
+      diagnostic: availability.diagnostic,
+    });
+    return Response.json({
+      error: availability.reason,
+      code: "docker_unavailable",
+      diagnostic: availability.diagnostic,
+      ...(deployedOnVercel ? { next_step: "This deployment cannot run Docker locally. Configure this route to dispatch the GitHub Actions worker." } : {}),
+    }, { status: 503 });
+  }
 
   const { data: project } = await supabase
     .from("projects")
