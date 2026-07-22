@@ -90,6 +90,9 @@ export function DashboardActionCenter({ projectId, tasks, clarifications, featur
       if (url.endsWith("/plan-next")) {
         setMessage(planningOutcomeMessage(payload));
       }
+      if (url.endsWith("/execute-next") && payload.type === "dispatched") {
+        setMessage(typeof payload.message === "string" ? payload.message : "Task dispatched to the isolated GitHub Actions worker.");
+      }
       if (url.endsWith("/review")) setMessage(validationOutcomeMessage(payload));
       router.refresh();
       return payload;

@@ -78,7 +78,7 @@ export function TaskPlanningPanel({ projectId, tasks, projectStatus, features }:
       return;
     }
     if (endpoint === "plan-next" && body) setRecommendation("");
-    setMessage(payload.message ?? (endpoint === "plan-next" ? "Task proposal created." : "Execution pass completed."));
+    setMessage(payload.message ?? (endpoint === "plan-next" ? "Task proposal created." : payload.type === "dispatched" ? "Task dispatched to the isolated GitHub Actions worker." : "Execution pass completed."));
     if (endpoint === "execute-next") setActiveExecutionTaskId(null);
     router.refresh();
   }
