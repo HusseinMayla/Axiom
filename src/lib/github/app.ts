@@ -213,6 +213,32 @@ async function readRepositoryFile(repository: AvailableRepository, path: string,
   return content.slice(0, 15000);
 }
 
+export function hasGitHubActionsWorker() {
+  return Boolean(process.env.AXIOM_WORKER_REPOSITORY?.trim());
+}
+
+/** Dispatches the central Axiom worker workflow with a narrowly scoped task ID. */
+export async function dispatchAxiomWorker(taskId: string) {
+  const configuredRepository = process.env.AXIOM_WORKER_REPOSITORY?.trim().toLowerCase();
+  if (!configuredRepository) throw new Error("GitHub Actions worker is not configured. Add AXIOM_WORKER_REPOSITORY to the deployment environment.");
+
+  const repositories = await listAvailableRepositories();
+  const workerRepository = repositories.find((repository) => repository.fullName.toLowerCase() === configuredRepository);
+  if (!workerRepository) throw new Error("The GitHub App cannot access the configured worker repository: " + configuredRepository + ".");
+
+  const token = await getRepositoryInstallationToken(workerRepository);
+  await githubFetch<void>(
+    "/repos/" + encodeURIComponent(workerRepository.owner) + "/" + encodeURIComponent(workerRepository.name) + "/actions/workflows/axiom-worker.yml/dispatches",
+    token,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref: workerRepository.defaultBranch, inputs: { task_id: taskId } }),
+    },
+  );
+  return workerRepository.fullName;
+}
+
 export async function getRepositoryInstallationToken(repository: AvailableRepository) {
   return getInstallationToken(repository.installationId, repository.id);
 }

@@ -1,5 +1,5 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { deleteRepositoryBranch, getRepositoryInstallationToken, type AvailableRepository } from "@/lib/github/app";
+import { deleteRepositoryBranch, dispatchAxiomWorker, getRepositoryInstallationToken, hasGitHubActionsWorker, type AvailableRepository } from "@/lib/github/app";
 import { createDeveloperConversation, requestDeveloperToolCalls, type AgentToolCall } from "@/lib/ai/task-execution";
 import type { Content } from "@google/genai";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -439,6 +439,22 @@ export async function POST(
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return Response.json({ error: "Sign in before running a task." }, { status: 401 });
+  if (process.env.VERCEL === "1" && hasGitHubActionsWorker()) {
+    let taskId = requestedTaskId;
+    if (!taskId) {
+      const { data: nextTask } = await supabase.from("tasks").select("id").eq("project_id", projectId).in("state", ["approved", "queued", "failed"]).is("archived_at", null).order("category").order("priority").order("created_at").limit(1).maybeSingle();
+      taskId = nextTask?.id;
+    }
+    if (!taskId) return Response.json({ type: "idle", message: "No approved task is waiting for execution." });
+    try {
+      const workerRepository = await dispatchAxiomWorker(taskId);
+      return Response.json({ type: "dispatched", taskId, message: "Task dispatched to the isolated GitHub Actions worker.", workerRepository });
+    } catch (error) {
+      const diagnostic = error instanceof Error ? error.message : String(error);
+      console.error("Axiom could not dispatch the GitHub Actions worker", { projectId, taskId, diagnostic });
+      return Response.json({ error: "Could not dispatch the GitHub Actions worker.", code: "worker_dispatch_failed", diagnostic }, { status: 502 });
+    }
+  }
   return executeNextTask(supabase, projectId, "human", requestedTaskId);
 }
 
