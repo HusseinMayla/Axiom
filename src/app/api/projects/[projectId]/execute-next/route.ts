@@ -75,7 +75,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
     .in("state", BRANCH_BLOCKING_STATES)
     .is("archived_at", null)
     .maybeSingle();
-  if (blockingTask) {
+  if (blockingTask && blockingTask.id !== requestedTaskId) {
     return Response.json({ error: "Task " + blockingTask.id + " is still " + blockingTask.state + "; merge or resolve its branch before creating another." }, { status: 409 });
   }
 
@@ -83,7 +83,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
     .from("tasks")
     .select("id, category, feature_id, objective, developer_prompt, allowed_paths, acceptance_criteria, validation_commands, execution_logs, human_actions, branch_name, automation_attempt_count, features(context_node_id)")
     .eq("project_id", projectId)
-    .in("state", ["approved", "queued", "failed"])
+    .in("state", requestedTaskId ? ["approved", "queued", "failed", "running"] : ["approved", "queued", "failed"])
     .is("archived_at", null);
   if (requestedTaskId) taskQuery = taskQuery.eq("id", requestedTaskId);
   const { data: task } = await taskQuery.order("category").order("priority").order("created_at").limit(1).maybeSingle();
@@ -446,11 +446,17 @@ export async function POST(
       taskId = nextTask?.id;
     }
     if (!taskId) return Response.json({ type: "idle", message: "No approved task is waiting for execution." });
+    const { data: claimedTask, error: claimError } = await supabase.from("tasks")
+      .update({ state: "running", execution_started_at: new Date().toISOString(), review_feedback: "Task is waiting for the isolated GitHub Actions worker to start.", updated_at: new Date().toISOString() })
+      .eq("id", taskId).eq("project_id", projectId).in("state", ["approved", "queued", "failed"])
+      .select("id").maybeSingle();
+    if (claimError || !claimedTask) return Response.json({ error: "This task has already been claimed or is no longer ready to run.", code: "task_already_claimed" }, { status: 409 });
     try {
       const workerRepository = await dispatchAxiomWorker(taskId);
       return Response.json({ type: "dispatched", taskId, message: "Task dispatched to the isolated GitHub Actions worker.", workerRepository });
     } catch (error) {
       const diagnostic = error instanceof Error ? error.message : String(error);
+      await supabase.from("tasks").update({ state: "approved", execution_started_at: null, review_feedback: "Could not dispatch the GitHub Actions worker: " + diagnostic, updated_at: new Date().toISOString() }).eq("id", taskId).eq("project_id", projectId);
       console.error("Axiom could not dispatch the GitHub Actions worker", { projectId, taskId, diagnostic });
       return Response.json({ error: "Could not dispatch the GitHub Actions worker.", code: "worker_dispatch_failed", diagnostic }, { status: 502 });
     }
