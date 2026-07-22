@@ -10,6 +10,11 @@ const NPM_CACHE_VOLUME = "axiom-npm-cache";
 // The first Docker run may need to download the Node image. This is deliberately
 // longer than normal command limits, while all in-container work remains bounded.
 const WORKSPACE_START_TIMEOUT_MS = 10 * 60_000;
+// GitHub-hosted runners start with an empty workspace. Give ordinary agent
+// commands room to complete, and dependency/scaffolding commands extra time
+// for a cold package download, while retaining a finite per-step limit.
+const DEFAULT_STEP_TIMEOUT_MS = 5 * 60_000;
+const DEPENDENCY_STEP_TIMEOUT_MS = 8 * 60_000;
 const MAX_DIFF_CHARS = 48_000;
 const BLOCKED_PATH_PARTS = new Set([".git", "node_modules", "vendor", "dist", "build", ".next", "coverage"]);
 export const WORKSPACE_TREE_IGNORES = [
@@ -59,12 +64,12 @@ function shellQuote(value: string) {
   return "'" + value.replace(/'/g, "'\\''") + "'";
 }
 
-async function exec(session: ExecutionSession, args: string[], timeoutMs = 120_000) {
+async function exec(session: ExecutionSession, args: string[], timeoutMs = DEFAULT_STEP_TIMEOUT_MS) {
   const result = await runDocker(["exec", "-w", WORKSPACE_PATH, session.containerName, ...args], timeoutMs);
   return { ...result, output: sanitize((result.stdout + "\n" + result.stderr).trim()) };
 }
 
-async function execShell(session: ExecutionSession, script: string, timeoutMs = 120_000) {
+async function execShell(session: ExecutionSession, script: string, timeoutMs = DEFAULT_STEP_TIMEOUT_MS) {
   return exec(session, ["bash", "-lc", script], timeoutMs);
 }
 
@@ -234,7 +239,7 @@ export async function prepareWorkspaceDependencies(session: ExecutionSession, sy
   const command = commandByManager[packageManager.stdout.trim()];
   if (!command) return null;
 
-  const result = await execShell(session, command, 200_000);
+  const result = await execShell(session, command, DEPENDENCY_STEP_TIMEOUT_MS);
   return { command, exitCode: result.exitCode, output: result.output };
 }
 
@@ -276,7 +281,7 @@ export async function runDeveloperCommands(session: ExecutionSession, commands: 
   for (const command of commands.slice(0, 8)) {
     const sanitized = ensureNonInteractive(command);
     try {
-      const timeout = isLongRunningCommand(sanitized) ? 200_000 : 120_000;
+      const timeout = isLongRunningCommand(sanitized) ? DEPENDENCY_STEP_TIMEOUT_MS : DEFAULT_STEP_TIMEOUT_MS;
       const result = await execShell(session, sanitized, timeout);
 
       // If the command failed and looks like a scaffolding tool, auto-run --help
@@ -337,7 +342,7 @@ export async function runValidations(session: ExecutionSession, commands: string
   const results: ValidationResult[] = [];
   for (const command of commands.slice(0, 8)) {
     try {
-      const result = await execShell(session, command, 120_000);
+      const result = await execShell(session, command, DEFAULT_STEP_TIMEOUT_MS);
       results.push({ command, exitCode: result.exitCode, output: result.output });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
