@@ -346,14 +346,11 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
       validation_results: validations.map((result) => result.command + ": " + (result.exitCode === 0 ? "passed" : "failed") + " — " + result.output.slice(-700)),
     };
 
-    // Deterministic validation is a hard gate. The evaluator can later explain a
-    // retry, but an invalid build/test result must never create a branch for human
-    // approval. A no-op has the same retry outcome because there is nothing to
-    // review or push.
-    if (!validationPassed || paths.length === 0) {
-      const feedback = !validationPassed
-        ? "Deterministic validation failed. Fix the recorded command failure before retrying."
-        : "The agent produced no changed files, so there is no implementation to review.";
+    // Deterministic validation is a hard gate. An already-satisfied task is a
+    // successful no-op, not a failed run: there is no branch to review because
+    // the requested outcome was already present before the worker started.
+    if (!validationPassed) {
+      const feedback = "Deterministic validation failed. Fix the recorded command failure before retrying.";
       const { data: currentProject } = await supabase.from("projects").select("automation_state").eq("id", projectId).maybeSingle();
       const retainForHuman = trigger === "human" || currentProject?.automation_state === "frozen";
       await finishTask(supabase, typedTask.id, {
@@ -374,6 +371,21 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
         latestReport: report.dashboard_summary || report.summary,
       });
       return Response.json({ type: retainForHuman ? "failed" : "retry", taskId: typedTask.id, message: feedback });
+    }
+
+    if (paths.length === 0) {
+      const feedback = "No code change was needed: the requested outcome was already implemented and validation passed.";
+      await finishTask(supabase, typedTask.id, {
+        state: "completed",
+        branch_name: null,
+        base_sha: null,
+        head_sha: null,
+        developer_report: report,
+        execution_logs: executionLogs,
+        review_feedback: feedback,
+      });
+      await setCurrentStatus({ supabase, contextNode: typedTask.category === "feature" ? featureNode : rootNode, task: typedTask, state: "completed", remainingWork: [], latestReport: report.dashboard_summary || report.summary });
+      return Response.json({ type: "completed_noop", taskId: typedTask.id, message: feedback });
     }
 
     await assertTaskNotArchived(supabase, typedTask.id);
