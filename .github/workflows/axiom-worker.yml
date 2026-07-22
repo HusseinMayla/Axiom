@@ -1,0 +1,44 @@
+name: Axiom worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: "Axiom task ID to execute"
+        required: true
+        type: string
+
+concurrency:
+  group: axiom-worker
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+
+    env:
+      AXIOM_TASK_ID: ${{ inputs.task_id }}
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL_FAST: ${{ secrets.GEMINI_MODEL_FAST }}
+      GEMINI_MODEL_SMART: ${{ secrets.GEMINI_MODEL_SMART }}
+      GITHUB_APP_ID: ${{ secrets.GITHUB_APP_ID }}
+      GITHUB_APP_SLUG: ${{ secrets.GITHUB_APP_SLUG }}
+      GITHUB_APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run worker
