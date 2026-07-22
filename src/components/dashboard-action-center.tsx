@@ -48,6 +48,7 @@ export function DashboardActionCenter({ projectId, tasks, clarifications, featur
         const response = await fetch(`/api/projects/${projectId}/automation/cycle`, { method: "POST" });
         if (!response.ok) {
           const payload = await response.json().catch(() => ({}));
+          console.error("Axiom automation cycle failed", { projectId, status: response.status, statusText: response.statusText, payload });
           setMessage(payload.error ?? "Automatic task planning could not start.");
         }
       } catch {
@@ -82,6 +83,7 @@ export function DashboardActionCenter({ projectId, tasks, clarifications, featur
       const response = await fetch(url, { method: "POST", headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
+        console.error("Axiom API request failed", { url, projectId, status: response.status, statusText: response.statusText, payload });
         setMessage(payload.error ?? (url.endsWith("/plan-next") ? "Axiom could not create the task proposal. Check the repository connection and try again." : "Axiom could not apply that decision."));
         return null;
       }

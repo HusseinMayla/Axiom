@@ -71,6 +71,7 @@ export function TaskPlanningPanel({ projectId, tasks, projectStatus, features }:
     const payload = await response.json().catch(() => ({ error: "The server returned an invalid response. Check the terminal for details." }));
     setAction("idle");
     if (!response.ok) {
+      console.error("Axiom task request failed", { endpoint, projectId, status: response.status, statusText: response.statusText, payload });
       setAction("error");
       if (endpoint === "execute-next") setActiveExecutionTaskId(null);
       setMessage(payload.error ?? "Axiom could not complete this manual action.");
