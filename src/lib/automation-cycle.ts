@@ -99,12 +99,19 @@ async function evaluate(supabase: Supabase, projectId: string, taskId: string, o
 async function execute(supabase: Supabase, projectId: string, taskId: string, owner: string): Promise<CycleResult> {
   try {
     const response = await withLeaseHeartbeat(supabase, projectId, "delivery", owner, () => executeNextTask(supabase, projectId, "automation"), () => cancelActiveRun(taskId));
-    const body = await response.json() as { type?: string; error?: string; message?: string; taskId?: string; rateLimited?: boolean };
+    const body = await response.json() as { type?: string; error?: string; message?: string; taskId?: string; rateLimited?: boolean; code?: string; diagnostic?: string; next_step?: string };
     if (body.rateLimited) {
       await cooldown(supabase, projectId, "Developer execution remained rate-limited after retrying for 100 seconds.");
       return result("delivery", "execute", taskId, null, "Developer execution is rate-limited; automation is cooling down.");
     }
-    if (!response.ok || body.error) throw new Error(body.error ?? "Automation could not start the approved task.");
+    if (!response.ok || body.error) {
+      const reason = [body.error ?? "Automation could not start the approved task.", body.diagnostic, body.next_step]
+        .filter((value): value is string => Boolean(value))
+        .join(" ");
+      console.error("Automation execution could not start", { projectId, taskId, status: response.status, code: body.code, diagnostic: body.diagnostic });
+      await event(supabase, projectId, "automation_execution_unavailable", { task_id: taskId, status: response.status, code: body.code ?? null, diagnostic: body.diagnostic ?? null, next_step: body.next_step ?? null });
+      return result("delivery", "execute", taskId, null, reason);
+    }
     if (body.taskId && body.taskId !== taskId) throw new Error("The execution queue changed after its automation lease was claimed.");
     if (body.type === "pending_review") {
       await event(supabase, projectId, "automation_evaluation_started", { task_id: taskId, lane: "delivery", message: "Execution finished; AI review started immediately." });
