@@ -27,9 +27,9 @@ jobs:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_MODEL_FAST: ${{ secrets.GEMINI_MODEL_FAST }}
       GEMINI_MODEL_SMART: ${{ secrets.GEMINI_MODEL_SMART }}
-      GITHUB_APP_ID: ${{ secrets.GITHUB_APP_ID }}
-      GITHUB_APP_SLUG: ${{ secrets.GITHUB_APP_SLUG }}
-      GITHUB_APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+      GITHUB_APP_ID: ${{ secrets.AXIOM_GH_APP_ID }}
+      GITHUB_APP_SLUG: ${{ secrets.AXIOM_GH_APP_SLUG }}
+      GITHUB_APP_PRIVATE_KEY: ${{ secrets.AXIOM_GH_APP_PRIVATE_KEY }}
 
     steps:
       - uses: actions/checkout@v4
