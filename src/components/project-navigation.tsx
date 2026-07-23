@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AiPlannerStatusWidget } from "@/components/ai-planner-status-widget";
 
 type ProjectNavigationProps = {
@@ -33,7 +33,39 @@ export function ProjectNavigation({
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [automation, setAutomation] = useState(automationState ?? "running");
   const [automationPending, setAutomationPending] = useState(false);
+  const [attention, setAttention] = useState(attentionCount);
   const frozen = automation === "frozen";
+
+  useEffect(() => {
+    setAttention(attentionCount);
+  }, [attentionCount]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    let isMounted = true;
+
+    const pollAttention = async () => {
+      try {
+        const response = await fetch(`/api/projects/${projectId}/automation`);
+        if (response.ok && isMounted) {
+          const payload = await response.json();
+          if (typeof payload.attentionCount === "number") {
+            setAttention(payload.attentionCount);
+          }
+        }
+      } catch (err) {
+        // Silent catch for background polling
+      }
+    };
+
+    void pollAttention();
+    const interval = setInterval(pollAttention, 5000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [projectId]);
 
   async function toggleAutomation() {
     setAutomationPending(true);
@@ -111,7 +143,7 @@ export function ProjectNavigation({
               <Link className={active ? "project-nav-link active" : "project-nav-link"} href={href} key={item.slug}>
                 <span aria-hidden="true">{item.icon}</span>
                 {item.label}
-                {item.slug === "dashboard" && attentionCount > 0 ? <b className="nav-attention-count" aria-label={`${attentionCount} items need your attention`}>{attentionCount > 99 ? "99+" : attentionCount}</b> : null}
+                {item.slug === "dashboard" && attention > 0 ? <b className="nav-attention-count" aria-label={`${attention} items need your attention`}>{attention > 99 ? "99+" : attention}</b> : null}
               </Link>
             );
           })}
@@ -150,7 +182,7 @@ export function ProjectNavigation({
             <Link className={active ? "mobile-nav-link active" : "mobile-nav-link"} href={href} key={item.slug}>
               <span aria-hidden="true">{item.icon}</span>
               {item.label}
-              {item.slug === "dashboard" && attentionCount > 0 ? <b className="mobile-nav-attention-count" aria-label={`${attentionCount} items need your attention`}>{attentionCount > 99 ? "99+" : attentionCount}</b> : null}
+              {item.slug === "dashboard" && attention > 0 ? <b className="mobile-nav-attention-count" aria-label={`${attention} items need your attention`}>{attention > 99 ? "99+" : attention}</b> : null}
             </Link>
           );
         })}
@@ -158,3 +190,4 @@ export function ProjectNavigation({
     </>
   );
 }
+

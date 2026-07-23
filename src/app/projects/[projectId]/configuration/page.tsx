@@ -1,6 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { ProjectConfigurationPanel } from "@/components/project-configuration-panel";
 import { ProjectNavigation } from "@/components/project-navigation";
+import { normalizeHumanPrerequisites } from "@/lib/human-prerequisites";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export default async function ProjectConfigurationPage({ params }: { params: Promise<{ projectId: string }> }) {
@@ -13,11 +14,15 @@ export default async function ProjectConfigurationPage({ params }: { params: Pro
     supabase.from("projects").select("id, name").order("updated_at", { ascending: false }),
   ]);
   if (!project) notFound();
-  const [{ data: contextNode }, { data: tasks }, { count: openClarifications }] = await Promise.all([
+  const [{ data: contextNode }, { data: tasks }, { count: openClarifications }, { data: allTasks }, { data: humanTodos }] = await Promise.all([
     supabase.from("context_nodes").select("id").eq("project_id", projectId).eq("kind", "project").eq("status", "approved").maybeSingle(),
     supabase.from("tasks").select("state, objective").eq("project_id", projectId).is("archived_at", null).in("state", ["waiting_for_approval", "running", "pending_review", "waiting_for_human_approval"]).order("updated_at", { ascending: false }).limit(1),
     supabase.from("clarification_questions").select("id", { count: "exact", head: true }).eq("project_id", projectId).eq("status", "open"),
+    supabase.from("tasks").select("id, state, human_actions, archived_at").eq("project_id", projectId).is("archived_at", null),
+    supabase.from("human_todos").select("id").eq("project_id", projectId).eq("status", "open"),
   ]);
+  const openPrerequisites = (allTasks ?? []).flatMap((task) => normalizeHumanPrerequisites((task as { human_actions?: unknown }).human_actions).filter((action) => !action.optional && !action.acknowledgedAt));
+  const attentionCount = (allTasks ?? []).filter((task) => ["waiting_for_approval", "planned", "failed"].includes(task.state)).length + (openClarifications ?? 0) + openPrerequisites.length + (humanTodos?.length ?? 0);
   const settings = (project.settings ?? {}) as { github?: { full_name?: unknown; default_branch?: unknown }; developer?: { model?: unknown; max_steps?: unknown }; engineer?: { model?: unknown } };
   const repositoryName = typeof settings.github?.full_name === "string" ? settings.github.full_name : project.repository_url ?? "No repository connected";
   const model = settings.developer?.model === "gemini-3.5-flash" || settings.developer?.model === "gemini-3.1-flash-lite" ? settings.developer.model : "gemini-3.1-flash-lite";
@@ -32,6 +37,7 @@ export default async function ProjectConfigurationPage({ params }: { params: Pro
         repositoryUrl={project.repository_url}
         projects={projects ?? []}
         automationState={project.automation_state as "running" | "frozen" | null}
+        attentionCount={attentionCount}
       />
       <main className="workspace-main configuration-main">
         <ProjectConfigurationPanel
