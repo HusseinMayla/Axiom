@@ -4,6 +4,7 @@ import { proposeTask } from "@/lib/ai/task-planning";
 import { normalizeHumanPrerequisites, serializeHumanPrerequisites } from "@/lib/human-prerequisites";
 import { scanRepository, type AvailableRepository } from "@/lib/github/app";
 import { planningScopeBlocker } from "@/lib/automation-eligibility";
+import { markFeatureCompletedWithoutTask } from "@/lib/feature-status";
 
 const ACTIVE_TASK_STATES = ["planned", "queued", "running", "pending_review", "waiting_for_approval", "waiting_for_human_approval", "approved"];
 const requestSchema = z.object({
@@ -165,8 +166,17 @@ export async function POST(
     }
 
     if (result.type === "no_work") {
+      if (target.category === "feature") {
+        await markFeatureCompletedWithoutTask({
+          supabase,
+          projectId,
+          featureId: feature!.id,
+          contextNodeId: feature!.context_node_id,
+          reason: result.reason,
+        });
+      }
       await supabase.from("events").insert({ project_id: projectId, actor_type: "ai", event_type: "planning_no_work", payload: { trigger, category: target.category, reason: result.reason } });
-      return Response.json({ type: "no_work", message: result.reason });
+      return Response.json({ type: "no_work", message: result.reason, featureCompleted: target.category === "feature" });
     }
 
     const task = result.task;

@@ -365,7 +365,7 @@ function TaskCard({ task, projectId, onChange, forceLive = false }: { task: Task
       {task.state === "waiting_for_human_approval" && (
         <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", margin: "8px 0" }}>
           <button className="button compact-button" disabled={merging} onClick={mergeApproval}>
-            {merging ? "Merging branch…" : "Approve & Merge Branch"}
+            {merging ? (task.branchName ? "Merging branch…" : "Confirming completion…") : task.branchName ? "Approve & Merge Branch" : "Confirm completion"}
           </button>
           <button className="button secondary compact-button" style={{ borderColor: "#ef4444", color: "#ef4444" }} disabled={rejecting} onClick={rejectApproval}>
             {rejecting ? "Rejecting…" : "Reject & Redo Task"}
@@ -378,7 +378,7 @@ function TaskCard({ task, projectId, onChange, forceLive = false }: { task: Task
             className="task-feedback"
             value={feedbackText}
             onChange={(e) => setFeedbackText(e.target.value)}
-            placeholder="Feedback for developer agent on rejection / redo..."
+            placeholder={task.branchName ? "Feedback for developer agent on rejection / redo..." : "Explain why the existing implementation does not satisfy this task..."}
             style={{ width: "100%", minHeight: "60px", marginBottom: "4px" }}
           />
         </div>

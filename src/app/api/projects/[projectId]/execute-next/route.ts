@@ -391,7 +391,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
     if (paths.length === 0) {
       const feedback = "No code change was needed: the requested outcome was already implemented and validation passed.";
       await finishTask(supabase, typedTask.id, {
-        state: "completed",
+        state: "waiting_for_human_approval",
         branch_name: null,
         base_sha: null,
         head_sha: null,
@@ -399,8 +399,8 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
         execution_logs: executionLogs,
         review_feedback: feedback,
       }, taskLeaseOwner);
-      await setCurrentStatus({ supabase, contextNode: typedTask.category === "feature" ? featureNode : rootNode, task: typedTask, state: "completed", remainingWork: [], latestReport: report.dashboard_summary || report.summary });
-      return Response.json({ type: "completed_noop", taskId: typedTask.id, message: feedback });
+      await setCurrentStatus({ supabase, contextNode: typedTask.category === "feature" ? featureNode : rootNode, task: typedTask, state: "awaiting_human_confirmation", remainingWork: ["Confirm that the existing implementation and recorded validation satisfy this task."], latestReport: report.dashboard_summary || report.summary });
+      return Response.json({ type: "waiting_for_human_approval", taskId: typedTask.id, message: feedback });
     }
 
     await assertTaskNotArchived(supabase, typedTask.id);

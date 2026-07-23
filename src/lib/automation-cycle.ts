@@ -8,6 +8,7 @@ import { executeNextTask } from "@/app/api/projects/[projectId]/execute-next/rou
 import { isGeminiRateLimitError } from "@/lib/ai/gemini";
 import { cancelActiveRun } from "@/lib/execution/active-run";
 import { isPlanningScopeEligible, planningScopeBlocker } from "@/lib/automation-eligibility";
+import { markFeatureCompletedWithoutTask } from "@/lib/feature-status";
 
 type Supabase = SupabaseClient;
 const LEASE_TTL_MS = 2 * 60_000;
@@ -75,12 +76,21 @@ async function runDeliveryLane(supabase: Supabase, projectId: string, owner: str
 async function runPlanningLane(supabase: Supabase, projectId: string, owner: string, openTasks: Array<{ id: string; category: string; feature_id: string | null; state: string; objective: string }>, features: Array<{ id: string }>, questions: Array<{ feature_id: string | null }>): Promise<CycleResult> {
   const generalBlocker = planningScopeBlocker({ category: "general" }, openTasks, questions);
   const generalBlockers = openTasks.filter((task) => task.category === "general");
-  if (!generalBlocker && await claim(supabase, projectId, "planning", null, "propose", owner)) return plan(supabase, projectId, owner, null, "Claimed a general-task proposal check.");
-  if (!generalBlocker) return idle("General-task planning is already being claimed by another automation cycle.", { required_action: "propose", scope: "general", lease: await leaseDetails(supabase, projectId, "planning") });
+  let generalNoWork: CycleResult | null = null;
+  if (!generalBlocker) {
+    if (await claim(supabase, projectId, "planning", null, "propose", owner)) {
+      const generalResult = await plan(supabase, projectId, owner, null, "Claimed a general-task proposal check.");
+      if (generalResult.details?.outcome !== "no_work") return generalResult;
+      generalNoWork = generalResult;
+    } else {
+      return idle("General-task planning is already being claimed by another automation cycle.", { required_action: "propose", scope: "general", lease: await leaseDetails(supabase, projectId, "planning") });
+    }
+  }
   const blockedFeatures = new Set(questions.flatMap((question) => question.feature_id ? [question.feature_id] : []));
   const feature = features.find((candidate) => isPlanningScopeEligible({ category: "feature", featureId: candidate.id }, openTasks, questions));
   if (feature && await claim(supabase, projectId, "planning", null, "propose", owner)) return plan(supabase, projectId, owner, feature.id, "Claimed a feature-task proposal check.");
   if (feature) return idle("Feature planning is already being claimed by another automation cycle.", { required_action: "propose", scope: "feature", feature_id: feature.id, lease: await leaseDetails(supabase, projectId, "planning") });
+  if (generalNoWork) return generalNoWork;
   return idle("No eligible general or feature scope needs planning.", {
     blocking_general_tasks: taskDetails(generalBlockers),
     general_scope_blocker: generalBlocker,
@@ -222,20 +232,29 @@ async function plan(supabase: Supabase, projectId: string, owner: string, featur
         await event(supabase, projectId, "task_proposed", { task_id: created.id, source: "deterministic_foundation_repair", category: "general", reason: proposal.reason });
         return result("planning", "propose", created.id, null, "Created a corrective React/Vite/Tailwind foundation proposal after the planner identified repository drift.");
       }
+      if (feature) {
+        await markFeatureCompletedWithoutTask({
+          supabase,
+          projectId,
+          featureId: feature.id,
+          contextNodeId: feature.context_node_id,
+          reason: proposal.reason,
+        });
+      }
       await event(supabase, projectId, "planning_no_work", { feature_id: featureId, reason: proposal.reason });
-      return result("planning", "propose", null, featureId, proposal.reason);
+      return result("planning", "propose", null, featureId, proposal.reason, { outcome: "no_work" });
     }
     if (proposal.type === "clarification") {
       await supabase.from("clarification_questions").insert({ project_id: projectId, feature_id: featureId, question: proposal.question.question, rationale: proposal.question.rationale });
       if (featureId) await supabase.from("features").update({ status: "needs_clarification", updated_at: new Date().toISOString() }).eq("id", featureId);
       await event(supabase, projectId, "planning_clarification", { feature_id: featureId, question: proposal.question.question });
-      return result("planning", "propose", null, featureId, "Planner requested clarification.");
+      return result("planning", "propose", null, featureId, "Planner requested clarification.", { outcome: "clarification" });
     }
     const task = proposal.task;
     const { data: created, error } = await supabase.from("tasks").insert({ project_id: projectId, feature_id: featureId, category: target.category, priority: feature?.priority ?? 0, state: "waiting_for_approval", objective: task.objective, rationale: task.rationale, human_summary: task.human_summary, developer_prompt: task.developer_prompt, allowed_paths: task.allowed_paths, implementation_steps: task.implementation_steps, acceptance_criteria: task.acceptance_criteria, validation_commands: task.validation_commands, human_actions: serializeHumanPrerequisites(normalizeHumanPrerequisites(task.human_actions)), planning_context: { source: "automated", fresh_repository_tree_paths: scan.tree.length } }).select("id").single();
     if (error || !created) throw new Error(error?.message ?? "Could not save automatic proposal.");
     await event(supabase, projectId, "task_proposed", { task_id: created.id, source: "automated", category: target.category, feature_id: featureId, claimed_reason: claimedReason });
-      return result("planning", "propose", created.id, featureId, "Created a task proposal for human approval.");
+      return result("planning", "propose", created.id, featureId, "Created a task proposal for human approval.", { outcome: "task" });
     });
   } catch (error) {
     if (isGeminiRateLimitError(error)) {

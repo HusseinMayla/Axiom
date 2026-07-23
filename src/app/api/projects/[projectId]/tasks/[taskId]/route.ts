@@ -73,7 +73,7 @@ export async function PATCH(
     update.state = "completed";
     update.execution_finished_at = new Date().toISOString();
     const { updateProjectImplementationState } = await import("@/lib/project-status");
-    await updateProjectImplementationState({ supabase, projectId, state: "completed", summary: "Task merged into main branch: " + task.objective });
+    await updateProjectImplementationState({ supabase, projectId, state: "completed", summary: task.branch_name ? "Task merged into main branch: " + task.objective : "Human confirmed the existing implementation satisfies this task: " + task.objective });
   }
 
   if (parsed.data.rejectHumanApproval) {
