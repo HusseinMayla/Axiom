@@ -15,7 +15,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pro
   const [{ data: project }, { data: tasks }, { data: features }, { data: questions }, { data: leases }, { data: events }] = await Promise.all([
     supabase.from("projects").select("automation_state, automation_pause_reason, automation_cooldown_until, automation_last_action_at, automation_daily_run_limit, automation_run_day, automation_runs_today").eq("id", projectId).maybeSingle(),
     supabase.from("tasks").select("state, category, feature_id, archived_at").eq("project_id", projectId).is("archived_at", null),
-    supabase.from("features").select("id").eq("project_id", projectId).eq("status", "active"),
+    supabase.from("features").select("id").eq("project_id", projectId).in("status", ["active", "in_development"]),
     supabase.from("clarification_questions").select("feature_id").eq("project_id", projectId).eq("status", "open"),
     supabase.from("automation_leases").select("lane, action, task_id, expires_at").eq("project_id", projectId).gt("expires_at", new Date().toISOString()),
     supabase.from("events").select("id, event_type, payload, created_at").eq("project_id", projectId).in("event_type", ["planning_triggered", "planning_clarification", "planning_no_work", "task_proposed", "automation_execution_started", "automation_evaluation_started", "automation_claimed", "automation_skipped", "automation_evaluated", "automation_rate_limited", "automation_lease_recovered", "automation_heartbeat_failed", "automation_recovery_requires_human", "automation_frozen", "automation_continued"]).order("created_at", { ascending: false }).limit(20),

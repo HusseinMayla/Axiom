@@ -130,7 +130,7 @@ export async function ProjectDebugWorkspace({
   const draftResult = contextDraftSchema.safeParse(draftPayload);
   const showDiscoveryWizard = project.repository_state === "empty";
   const activeFeatureStatuses = (features ?? [])
-    .filter((feature) => feature.status === "active")
+    .filter((feature) => feature.status === "active" || feature.status === "in_development")
     .map((feature) => {
       const node = featureNodes?.find((featureNode) => featureNode.id === feature.context_node_id);
       const content = (node?.content ?? {}) as Record<string, unknown>;
@@ -170,11 +170,11 @@ export async function ProjectDebugWorkspace({
         projectId={project.id}
         stage={discovery?.stage ?? "draft"}
         draft={draftResult.success ? draftResult.data : null}
-        features={(features ?? []) as Array<{ id: string; name: string; description: string; priority: number; status: "draft" | "active" | "needs_clarification" | "on_hold" | "completed" }>}
+        features={(features ?? []) as Array<{ id: string; name: string; description: string; priority: number; status: "draft" | "active" | "in_development" | "needs_clarification" | "on_hold" | "completed" }>}
       />
       {project.state === "active" && <TaskPlanningPanel
         projectId={project.id}
-        features={(features ?? []).filter((feature) => feature.status === "active").map((feature) => ({ id: feature.id, name: feature.name }))}
+        features={(features ?? []).filter((feature) => feature.status === "active" || feature.status === "in_development").map((feature) => ({ id: feature.id, name: feature.name }))}
         projectStatus={(rootContent.current_status ?? {}) as { implementation_state?: string; summary?: string; active_task?: { objective?: string; task_state?: string } | null }}
         tasks={(tasks ?? []).map((task) => ({
           id: task.id,

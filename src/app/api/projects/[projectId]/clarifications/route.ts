@@ -50,14 +50,17 @@ export async function PUT(
     }
 
     if (q?.feature_id) {
-      const { data: remaining } = await supabase
+      const [{ data: remaining }, { data: feature }] = await Promise.all([
+        supabase
         .from("clarification_questions")
         .select("id")
         .eq("project_id", projectId)
         .eq("feature_id", q.feature_id)
-        .eq("status", "open");
+        .eq("status", "open"),
+        supabase.from("features").select("status").eq("id", q.feature_id).eq("project_id", projectId).maybeSingle(),
+      ]);
       if (!remaining || remaining.length === 0) {
-        await supabase.from("features").update({ status: "active", updated_at: new Date().toISOString() }).eq("id", q.feature_id);
+        await supabase.from("features").update({ status: feature?.status === "in_development" ? "in_development" : "active", updated_at: new Date().toISOString() }).eq("id", q.feature_id);
       }
     }
   }

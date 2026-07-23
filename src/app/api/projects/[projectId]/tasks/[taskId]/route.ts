@@ -8,6 +8,7 @@ import { runAutomationCycle } from "@/lib/automation-cycle";
 
 const updateTaskSchema = z.object({
   approve: z.boolean().optional(),
+  rejectProposal: z.boolean().optional(),
   mergeHumanApproval: z.boolean().optional(),
   rejectHumanApproval: z.boolean().optional(),
   acknowledgeHumanActionId: z.string().trim().min(1).max(100).optional(),
@@ -23,12 +24,15 @@ export async function PATCH(
   const { projectId, taskId } = await params;
   const parsed = updateTaskSchema.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid task update." }, { status: 400 });
+  if (parsed.data.approve && parsed.data.rejectProposal) {
+    return Response.json({ error: "Choose either approval or rejection for a task proposal." }, { status: 400 });
+  }
 
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return Response.json({ error: "Sign in before updating a task." }, { status: 401 });
 
-  const { data: task } = await supabase.from("tasks").select("id, state, archived_at, branch_name, objective, human_actions").eq("id", taskId).eq("project_id", projectId).maybeSingle();
+  const { data: task } = await supabase.from("tasks").select("id, state, archived_at, branch_name, objective, feature_id, human_actions").eq("id", taskId).eq("project_id", projectId).maybeSingle();
   if (!task) return Response.json({ error: "Task not found." }, { status: 404 });
 
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
@@ -59,6 +63,11 @@ export async function PATCH(
     update.automation_attempt_count = 0;
     update.last_automation_outcome = "human_reapproved";
     update.automation_paused_at = null;
+  }
+  if (parsed.data.rejectProposal) {
+    if (task.state !== "waiting_for_approval") return Response.json({ error: "Only a waiting task proposal can be rejected." }, { status: 409 });
+    update.state = "rejected";
+    update.human_feedback = parsed.data.feedback ?? "Human rejected this task proposal.";
   }
 
   const { data: project } = await supabase.from("projects").select("settings").eq("id", projectId).maybeSingle();
@@ -107,16 +116,25 @@ export async function PATCH(
   const { error } = await supabase.from("tasks").update(update).eq("id", taskId);
   if (error) return Response.json({ error: error.message }, { status: 500 });
 
+  if (parsed.data.approve && task.feature_id) {
+    const { error: featureError } = await supabase
+      .from("features")
+      .update({ status: "in_development", updated_at: new Date().toISOString() })
+      .eq("id", task.feature_id)
+      .eq("project_id", projectId);
+    if (featureError) return Response.json({ error: "Task was approved, but the feature could not enter development: " + featureError.message }, { status: 500 });
+  }
+
   // A human approval or merge is a durable automation wake-up, not a cue to
   // wait for the next browser polling interval before planning the next useful
   // improvement from the updated repository state.
-  if (parsed.data.approve || parsed.data.mergeHumanApproval) {
+  if (parsed.data.approve || parsed.data.rejectProposal || parsed.data.mergeHumanApproval) {
     after(async () => {
       const { data: project } = await supabase.from("projects").select("automation_state").eq("id", projectId).maybeSingle();
       if (project?.automation_state !== "running") return;
       try {
         const results = await runAutomationCycle({ supabase, projectId, owner: "task-approved-" + taskId + "-" + user.id });
-        await supabase.from("events").insert({ project_id: projectId, actor_type: "system", event_type: "automation_woken_by_human_decision", payload: { task_id: taskId, decision: parsed.data.mergeHumanApproval ? "merged" : "approved", message: "Human decision immediately woke automation to inspect and plan the next improvement.", results } });
+        await supabase.from("events").insert({ project_id: projectId, actor_type: "system", event_type: "automation_woken_by_human_decision", payload: { task_id: taskId, decision: parsed.data.mergeHumanApproval ? "merged" : parsed.data.rejectProposal ? "proposal_rejected" : "approved", message: "Human decision immediately woke automation to inspect and plan the next improvement.", results } });
       } catch (wakeError) {
         await supabase.from("events").insert({ project_id: projectId, actor_type: "system", event_type: "automation_wake_failed", payload: { task_id: taskId, reason: wakeError instanceof Error ? wakeError.message : "Automation wake-up failed." } });
       }
@@ -133,7 +151,7 @@ export async function PATCH(
     }
   }
 
-  const eventType = parsed.data.archive ? "task_archived" : parsed.data.resetExecution ? "task_execution_reset" : parsed.data.feedback ? "task_feedback" : parsed.data.approve ? "task_approved" : "human_prerequisite_acknowledged";
+  const eventType = parsed.data.archive ? "task_archived" : parsed.data.resetExecution ? "task_execution_reset" : parsed.data.rejectProposal ? "task_rejected" : parsed.data.feedback ? "task_feedback" : parsed.data.approve ? "task_approved" : "human_prerequisite_acknowledged";
   await supabase.from("events").insert({
     project_id: projectId,
     actor_type: "human",

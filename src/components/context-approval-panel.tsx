@@ -9,7 +9,7 @@ type Feature = {
   name: string;
   description: string;
   priority: number;
-  status: "draft" | "active" | "needs_clarification" | "on_hold" | "completed";
+  status: "draft" | "active" | "in_development" | "needs_clarification" | "on_hold" | "completed";
 };
 
 export function ContextApprovalPanel({
@@ -26,7 +26,7 @@ export function ContextApprovalPanel({
   const router = useRouter();
   const approved = stage === "approved";
   const visibleFeatures = approved
-    ? features.filter((feature) => feature.status === "active" || feature.status === "on_hold" || feature.status === "completed")
+    ? features.filter((feature) => feature.status === "active" || feature.status === "in_development" || feature.status === "on_hold" || feature.status === "completed")
     : features.filter((feature) => feature.status === "draft");
   const [selectedIds, setSelectedIds] = useState(() =>
     visibleFeatures.filter((feature) => feature.status === "draft").map((feature) => feature.id),

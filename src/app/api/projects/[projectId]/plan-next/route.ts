@@ -4,7 +4,7 @@ import { proposeTask } from "@/lib/ai/task-planning";
 import { normalizeHumanPrerequisites, serializeHumanPrerequisites } from "@/lib/human-prerequisites";
 import { scanRepository, type AvailableRepository } from "@/lib/github/app";
 import { planningScopeBlocker } from "@/lib/automation-eligibility";
-import { markFeatureCompletedWithoutTask } from "@/lib/feature-status";
+import { requestFeatureClarificationAfterNoWork } from "@/lib/feature-status";
 
 const ACTIVE_TASK_STATES = ["planned", "queued", "running", "pending_review", "waiting_for_approval", "waiting_for_human_approval", "approved"];
 const requestSchema = z.object({
@@ -47,7 +47,7 @@ export async function POST(
   if (project.spent_estimate_cents >= project.budget_cap_cents) return Response.json({ error: "This project has reached its AI budget cap." }, { status: 409 });
 
   const [{ data: features }, { data: activeTasks }, { data: openQuestions }, { data: rootNode }, { data: repositoryMap }, { data: outcomes }] = await Promise.all([
-    supabase.from("features").select("id, name, description, priority, context_node_id").eq("project_id", projectId).eq("status", "active").order("priority"),
+    supabase.from("features").select("id, name, description, priority, context_node_id, status").eq("project_id", projectId).in("status", ["active", "in_development"]).order("priority"),
     supabase.from("tasks").select("id, category, priority, feature_id, state, objective").eq("project_id", projectId).in("state", ACTIVE_TASK_STATES).is("archived_at", null),
     supabase.from("clarification_questions").select("feature_id").eq("project_id", projectId).eq("status", "open"),
     supabase.from("context_nodes").select("content").eq("project_id", projectId).eq("kind", "project").eq("status", "approved").order("created_at", { ascending: false }).limit(1).maybeSingle(),
@@ -158,7 +158,7 @@ export async function POST(
         question: result.question.question,
         rationale: result.question.rationale,
       });
-      if (target.category === "feature") {
+      if (target.category === "feature" && feature!.status !== "in_development") {
         await supabase.from("features").update({ status: "needs_clarification", updated_at: new Date().toISOString() }).eq("id", feature!.id);
       }
       await supabase.from("events").insert({ project_id: projectId, actor_type: "ai", event_type: "planning_clarification", payload: { trigger, category: target.category, question: result.question.question, rationale: result.question.rationale } });
@@ -167,16 +167,19 @@ export async function POST(
 
     if (result.type === "no_work") {
       if (target.category === "feature") {
-        await markFeatureCompletedWithoutTask({
+        const clarification = await requestFeatureClarificationAfterNoWork({
           supabase,
           projectId,
           featureId: feature!.id,
+          featureName: feature!.name,
           contextNodeId: feature!.context_node_id,
           reason: result.reason,
         });
+        await supabase.from("events").insert({ project_id: projectId, actor_type: "ai", event_type: "planning_clarification", payload: { trigger, category: "feature", feature_id: feature!.id, question: clarification.question, rationale: clarification.rationale, planner_no_work_reason: result.reason } });
+        return Response.json({ type: "clarification", featureId: feature!.id, message: "The planner could not prove this feature is complete, so it needs your clarification." });
       }
       await supabase.from("events").insert({ project_id: projectId, actor_type: "ai", event_type: "planning_no_work", payload: { trigger, category: target.category, reason: result.reason } });
-      return Response.json({ type: "no_work", message: result.reason, featureCompleted: target.category === "feature" });
+      return Response.json({ type: "no_work", message: result.reason });
     }
 
     const task = result.task;

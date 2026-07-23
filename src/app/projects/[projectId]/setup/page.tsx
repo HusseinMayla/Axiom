@@ -94,7 +94,7 @@ export default async function ProjectSetupPage({
         />
         {showDiscoveryWizard && <DiscoveryWizard projectId={project.id} projectName={project.name} initialAnswers={(discovery?.answers ?? {}) as DiscoveryAnswers} initialStage={stage as "draft" | "submitted" | "clarifying" | "ready_for_review" | "approved"} />}
         <ContextSynthesisPanel projectId={project.id} stage={stage} questions={(questions ?? []) as Array<{ id: string; question: string; rationale: string | null; answer: string | null; status: "open" | "answered" | "dismissed" }>} draft={draftResult.success ? draftResult.data : null} />
-        <ContextApprovalPanel key={(features ?? []).filter((feature) => feature.status === "draft").map((feature) => feature.id).join("|")} projectId={project.id} stage={stage} draft={draftResult.success ? draftResult.data : null} features={(features ?? []) as Array<{ id: string; name: string; description: string; priority: number; status: "draft" | "active" | "needs_clarification" | "on_hold" | "completed" }>} />
+        <ContextApprovalPanel key={(features ?? []).filter((feature) => feature.status === "draft").map((feature) => feature.id).join("|")} projectId={project.id} stage={stage} draft={draftResult.success ? draftResult.data : null} features={(features ?? []) as Array<{ id: string; name: string; description: string; priority: number; status: "draft" | "active" | "in_development" | "needs_clarification" | "on_hold" | "completed" }>} />
       </section>
     </main>
   );

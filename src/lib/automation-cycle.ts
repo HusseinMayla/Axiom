@@ -8,7 +8,7 @@ import { executeNextTask } from "@/app/api/projects/[projectId]/execute-next/rou
 import { isGeminiRateLimitError } from "@/lib/ai/gemini";
 import { cancelActiveRun } from "@/lib/execution/active-run";
 import { isPlanningScopeEligible, planningScopeBlocker } from "@/lib/automation-eligibility";
-import { markFeatureCompletedWithoutTask } from "@/lib/feature-status";
+import { requestFeatureClarificationAfterNoWork } from "@/lib/feature-status";
 
 type Supabase = SupabaseClient;
 const LEASE_TTL_MS = 2 * 60_000;
@@ -35,7 +35,7 @@ export async function runAutomationCycle({ supabase, projectId, owner = "automat
   await recoverExpiredLeases(supabase, projectId);
   const [{ data: tasks }, { data: features }, { data: questions }] = await Promise.all([
     supabase.from("tasks").select("id, category, feature_id, state, objective").eq("project_id", projectId).is("archived_at", null).order("category").order("priority").order("created_at"),
-    supabase.from("features").select("id").eq("project_id", projectId).eq("status", "active").order("priority"),
+    supabase.from("features").select("id").eq("project_id", projectId).in("status", ["active", "in_development"]).order("priority"),
     supabase.from("clarification_questions").select("feature_id").eq("project_id", projectId).eq("status", "open"),
   ]);
 
@@ -163,7 +163,7 @@ async function plan(supabase: Supabase, projectId: string, owner: string, featur
       const [{ data: project }, { data: root }, { data: feature }, { data: map }] = await Promise.all([
       supabase.from("projects").select("settings").eq("id", projectId).single(),
       supabase.from("context_nodes").select("content").eq("project_id", projectId).eq("kind", "project").eq("status", "approved").order("created_at", { ascending: false }).limit(1).maybeSingle(),
-      featureId ? supabase.from("features").select("id, name, description, priority, context_node_id").eq("id", featureId).maybeSingle() : Promise.resolve({ data: null }),
+      featureId ? supabase.from("features").select("id, name, description, priority, context_node_id, status").eq("id", featureId).maybeSingle() : Promise.resolve({ data: null }),
       supabase.from("context_nodes").select("content").eq("project_id", projectId).eq("kind", "repository_map").eq("source", "scanner").order("created_at", { ascending: false }).limit(1).maybeSingle(),
     ]);
     const repository = repositoryFromSettings(project?.settings);
@@ -233,20 +233,23 @@ async function plan(supabase: Supabase, projectId: string, owner: string, featur
         return result("planning", "propose", created.id, null, "Created a corrective React/Vite/Tailwind foundation proposal after the planner identified repository drift.");
       }
       if (feature) {
-        await markFeatureCompletedWithoutTask({
+        const clarification = await requestFeatureClarificationAfterNoWork({
           supabase,
           projectId,
           featureId: feature.id,
+          featureName: feature.name,
           contextNodeId: feature.context_node_id,
           reason: proposal.reason,
         });
+        await event(supabase, projectId, "planning_clarification", { feature_id: featureId, question: clarification.question, rationale: clarification.rationale, planner_no_work_reason: proposal.reason });
+        return result("planning", "propose", null, featureId, "Planner could not prove the feature is complete and needs clarification.", { outcome: "clarification" });
       }
       await event(supabase, projectId, "planning_no_work", { feature_id: featureId, reason: proposal.reason });
       return result("planning", "propose", null, featureId, proposal.reason, { outcome: "no_work" });
     }
     if (proposal.type === "clarification") {
       await supabase.from("clarification_questions").insert({ project_id: projectId, feature_id: featureId, question: proposal.question.question, rationale: proposal.question.rationale });
-      if (featureId) await supabase.from("features").update({ status: "needs_clarification", updated_at: new Date().toISOString() }).eq("id", featureId);
+      if (featureId && feature?.status !== "in_development") await supabase.from("features").update({ status: "needs_clarification", updated_at: new Date().toISOString() }).eq("id", featureId);
       await event(supabase, projectId, "planning_clarification", { feature_id: featureId, question: proposal.question.question });
       return result("planning", "propose", null, featureId, "Planner requested clarification.", { outcome: "clarification" });
     }

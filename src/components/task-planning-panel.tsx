@@ -187,6 +187,7 @@ function TaskCard({ task, projectId, onChange, forceLive = false }: { task: Task
   const [acknowledgingActionId, setAcknowledgingActionId] = useState<string | null>(null);
   const [merging, setMerging] = useState(false);
   const [rejecting, setRejecting] = useState(false);
+  const [rejectingProposal, setRejectingProposal] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [error, setError] = useState("");
   const [feedbackText, setFeedbackText] = useState(task.humanFeedback ?? "");
@@ -222,6 +223,21 @@ function TaskCard({ task, projectId, onChange, forceLive = false }: { task: Task
       setError(payload.error ?? "Could not approve this task.");
       return;
     }
+    onChange();
+  }
+
+  async function rejectProposal() {
+    if (!projectId || !onChange) return;
+    setRejectingProposal(true);
+    setError("");
+    const response = await fetch("/api/projects/" + projectId + "/tasks/" + task.id, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rejectProposal: true }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    setRejectingProposal(false);
+    if (!response.ok) { setError(payload.error ?? "Could not reject this task proposal."); return; }
     onChange();
   }
 
@@ -354,7 +370,12 @@ function TaskCard({ task, projectId, onChange, forceLive = false }: { task: Task
         {task.developerReport ? <DeveloperReportView report={task.developerReport} /> : <p>The future Docker worker will attach a structured implementation report here.</p>}
       </details>}
       {task.branchName && <p className="branch-name">Branch: <code>{task.branchName}</code>{task.headSha ? " · " + task.headSha.slice(0, 8) : ""}</p>}
-      {task.state === "waiting_for_approval" && <button className="button compact-button" disabled={approving} onClick={approve}>{approving ? "Approving…" : "Approve task"}</button>}
+      {task.state === "waiting_for_approval" && (
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", margin: "8px 0" }}>
+          <button className="button compact-button" disabled={approving || rejectingProposal} onClick={approve}>{approving ? "Approving…" : "Approve task"}</button>
+          <button className="button secondary compact-button" style={{ borderColor: "#ef4444", color: "#ef4444" }} disabled={approving || rejectingProposal} onClick={rejectProposal}>{rejectingProposal ? "Rejecting…" : "Reject proposal"}</button>
+        </div>
+      )}
       {task.state === "pending_review" && (
         <div style={{ margin: "8px 0" }}>
           <button className="button compact-button" disabled={reviewing} onClick={runAiReviewer}>
