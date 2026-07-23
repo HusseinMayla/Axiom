@@ -33,7 +33,7 @@ export async function PUT(
     if (!answer.answer.trim()) continue;
     const { data: q } = await supabase
       .from("clarification_questions")
-      .select("feature_id")
+      .select("feature_id, question, rationale")
       .eq("id", answer.id)
       .eq("project_id", projectId)
       .maybeSingle();
@@ -47,6 +47,26 @@ export async function PUT(
 
     if (error) {
       return Response.json({ error: error.message }, { status: 500 });
+    }
+
+    if (q) {
+      const { data: contextNode } = q.feature_id
+        ? await supabase.from("features").select("context_node_id").eq("id", q.feature_id).eq("project_id", projectId).maybeSingle()
+            .then(async ({ data: feature }) => feature?.context_node_id
+              ? supabase.from("context_nodes").select("id, content").eq("id", feature.context_node_id).maybeSingle()
+              : { data: null })
+        : await supabase.from("context_nodes").select("id, content").eq("project_id", projectId).eq("kind", "project").eq("status", "approved").order("created_at", { ascending: false }).limit(1).maybeSingle();
+      if (contextNode) {
+        const content = (contextNode.content ?? {}) as Record<string, unknown>;
+        const previous = Array.isArray(content.clarification_answers) ? content.clarification_answers : [];
+        await supabase.from("context_nodes").update({
+          content: {
+            ...content,
+            clarification_answers: [...previous, { question: q.question, answer: answer.answer.trim(), rationale: q.rationale, answered_at: new Date().toISOString() }].slice(-20),
+          },
+          updated_at: new Date().toISOString(),
+        }).eq("id", contextNode.id);
+      }
     }
 
     if (q?.feature_id) {
