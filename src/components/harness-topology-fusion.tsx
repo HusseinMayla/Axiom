@@ -273,7 +273,7 @@ export function HarnessTopologyFusion({
     [processNextInQueue]
   );
 
-  // Poll real project events if projectId is provided (ONLY real backend events from last 10s)
+  // Poll real project events if projectId is provided (animate max 10 packets from the last minute on refresh)
   useEffect(() => {
     if (!projectId || !mounted) return;
 
@@ -298,8 +298,8 @@ export function HarnessTopologyFusion({
 
           for (const ev of events) {
             const eventAgeMs = now - new Date(ev.created_at).getTime();
-            // ONLY process events created within the last 10 seconds (10,000 ms)
-            if (eventAgeMs > 10000) continue;
+            // ONLY process events created within the last 1 minute (60,000 ms)
+            if (eventAgeMs > 60000) continue;
 
             if (!processedEventIds.current.has(ev.id)) {
               processedEventIds.current.add(ev.id);
@@ -403,7 +403,7 @@ export function HarnessTopologyFusion({
 
           for (const ev of execEvents) {
             const eventAgeMs = now - new Date(ev.finished_at || ev.created_at || Date.now()).getTime();
-            if (eventAgeMs > 10000 && !execData.active) continue;
+            if (eventAgeMs > 60000 && !execData.active) continue;
 
             if (!processedEventIds.current.has(ev.id)) {
               processedEventIds.current.add(ev.id);
@@ -431,7 +431,8 @@ export function HarnessTopologyFusion({
         }
 
         if (itemsToSpawn.length > 0) {
-          spawnAnimations(itemsToSpawn);
+          // Animate at most the 10 most recent packets from the last 1 minute
+          spawnAnimations(itemsToSpawn.slice(-10));
         }
       } catch (err) {
         console.error("Telemetry polling error:", err);

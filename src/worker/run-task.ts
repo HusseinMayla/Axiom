@@ -1,6 +1,8 @@
 import { executeNextTask } from "@/app/api/projects/[projectId]/execute-next/route";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { cancelActiveRun } from "@/lib/execution/active-run";
+import { evaluateCompletedTask } from "@/lib/task-evaluation-service";
+import { isGeminiRateLimitError } from "@/lib/ai/gemini";
 
 const LEASE_TTL_MS = 2 * 60_000;
 
@@ -48,6 +50,43 @@ async function main() {
     const response = await executeNextTask(supabase, task.project_id, "automation", taskId, leaseOwner ?? undefined);
     const body = await response.json().catch(() => null) as { error?: string; message?: string; type?: string } | null;
     if (!response.ok) throw new Error(body?.error ?? body?.message ?? "Worker execution failed.");
+
+    // A GitHub Actions runner is ephemeral. Unlike the local control plane it
+    // does not have another request waiting to pick up `pending_review`, so it
+    // must complete the AI review before it releases the delivery lease.
+    if (body?.type === "pending_review") {
+      if (!leaseOwner) throw new Error("A worker cannot automatically validate a task without its delivery lease owner.");
+      try {
+        const review = await evaluateCompletedTask(supabase, task.project_id, taskId, "automation", leaseOwner);
+        console.log(JSON.stringify({ taskId, outcome: "reviewed", verdict: review.verdict, nextState: review.nextState }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "AI validation failed unexpectedly.";
+        const rateLimited = isGeminiRateLimitError(error);
+        const now = new Date().toISOString();
+        let recovery = supabase
+          .from("tasks")
+          .update({
+            state: rateLimited ? "approved" : "failed",
+            review_feedback: rateLimited
+              ? "AI validation is rate-limited. The task was returned to the approved queue for a later retry."
+              : "AI validation could not finish: " + message,
+            automation_lease_owner: null,
+            updated_at: now,
+          })
+          .eq("id", taskId)
+          .eq("project_id", task.project_id);
+        recovery = recovery.eq("automation_lease_owner", leaseOwner);
+        const { error: recoveryError } = await recovery;
+        if (recoveryError) console.error("Axiom worker could not persist AI validation failure", recoveryError);
+        await supabase.from("events").insert({
+          project_id: task.project_id,
+          actor_type: "system",
+          event_type: "automation_evaluation_failed",
+          payload: { task_id: taskId, rate_limited: rateLimited, reason: message },
+        });
+        throw error;
+      }
+    }
 
     console.log(JSON.stringify({ taskId, outcome: body?.type ?? "completed" }));
   } finally {
