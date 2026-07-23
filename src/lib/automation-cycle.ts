@@ -7,7 +7,7 @@ import { evaluateCompletedTask } from "@/lib/task-evaluation-service";
 import { executeNextTask } from "@/app/api/projects/[projectId]/execute-next/route";
 import { isGeminiRateLimitError } from "@/lib/ai/gemini";
 import { cancelActiveRun } from "@/lib/execution/active-run";
-import { isPlanningScopeEligible, planningScopeBlocker, planningScopeCounter } from "@/lib/automation-eligibility";
+import { planningScopeBlocker, planningScopeCounter } from "@/lib/automation-eligibility";
 
 type Supabase = SupabaseClient;
 const LEASE_TTL_MS = 2 * 60_000;
