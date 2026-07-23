@@ -23,7 +23,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pro
     supabase.from("human_todos").select("id").eq("project_id", projectId).eq("status", "open"),
   ]);
   if (!project) return Response.json({ error: "Project not found." }, { status: 404 });
-  const activeBranch = (tasks ?? []).some((task) => ["running", "pending_review", "waiting_for_human_approval"].includes(task.state));
+  const hasPendingReview = (tasks ?? []).some((task) => task.state === "pending_review");
   const hasQueuedTask = (tasks ?? []).some((task) => ["approved", "queued"].includes(task.state));
   const planningTasks = (tasks ?? []).filter((task) => ["planned", "waiting_for_approval", "approved", "queued", "running", "pending_review", "waiting_for_human_approval"].includes(task.state));
   const canPropose = project.state === "active" && (isPlanningScopeEligible({ category: "general" }, planningTasks, questions ?? [])
@@ -31,7 +31,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pro
   const openPrerequisites = (tasks ?? []).flatMap((task) => normalizeHumanPrerequisites((task as { human_actions?: unknown }).human_actions).filter((action) => !action.optional && !action.acknowledgedAt));
   const attentionCount = (tasks ?? []).filter((task) => ["waiting_for_approval", "planned", "failed"].includes(task.state)).length + (questions?.length ?? 0) + openPrerequisites.length + (humanTodos?.length ?? 0);
   const runsToday = project.automation_run_day === new Date().toISOString().slice(0, 10) ? project.automation_runs_today ?? 0 : 0;
-  return Response.json({ ...automationSnapshot({ state: project.automation_state, pauseReason: project.automation_pause_reason, cooldownUntil: project.automation_cooldown_until, lastActionAt: project.automation_last_action_at, leases: leases ?? [], hasReview: activeBranch, hasQueuedTask, canPropose }), projectState: project.state, dailyRunLimit: project.automation_daily_run_limit ?? 3, runsToday, attentionCount, events: events ?? [] });
+  return Response.json({ ...automationSnapshot({ state: project.automation_state, pauseReason: project.automation_pause_reason, cooldownUntil: project.automation_cooldown_until, lastActionAt: project.automation_last_action_at, leases: leases ?? [], hasReview: hasPendingReview, hasQueuedTask, canPropose }), projectState: project.state, dailyRunLimit: project.automation_daily_run_limit ?? 3, runsToday, attentionCount, events: events ?? [] });
 }
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ projectId: string }> }) {
