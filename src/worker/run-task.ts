@@ -14,7 +14,9 @@ const LEASE_TTL_MS = 2 * 60_000;
 async function main() {
   const taskId = process.env.AXIOM_TASK_ID;
   const leaseOwner = process.env.AXIOM_AUTOMATION_LEASE_OWNER?.trim() || null;
+  const trigger = process.env.AXIOM_EXECUTION_TRIGGER === "human" ? "human" : "automation";
   if (!taskId) throw new Error("AXIOM_TASK_ID is required.");
+  if (trigger === "automation" && !leaseOwner) throw new Error("Automated execution requires its delivery lease owner.");
 
   const supabase = createSupabaseAdminClient();
   const { data: task, error } = await supabase
@@ -47,7 +49,7 @@ async function main() {
       }, 30_000);
     }
 
-    const response = await executeNextTask(supabase, task.project_id, "automation", taskId, leaseOwner ?? undefined);
+    const response = await executeNextTask(supabase, task.project_id, trigger, taskId, leaseOwner ?? undefined);
     const body = await response.json().catch(() => null) as { error?: string; message?: string; type?: string } | null;
     if (!response.ok) throw new Error(body?.error ?? body?.message ?? "Worker execution failed.");
 
@@ -55,9 +57,8 @@ async function main() {
     // does not have another request waiting to pick up `pending_review`, so it
     // must complete the AI review before it releases the delivery lease.
     if (body?.type === "pending_review") {
-      if (!leaseOwner) throw new Error("A worker cannot automatically validate a task without its delivery lease owner.");
       try {
-        const review = await evaluateCompletedTask(supabase, task.project_id, taskId, "automation", leaseOwner);
+        const review = await evaluateCompletedTask(supabase, task.project_id, taskId, trigger, leaseOwner ?? undefined);
         console.log(JSON.stringify({ taskId, outcome: "reviewed", verdict: review.verdict, nextState: review.nextState }));
       } catch (error) {
         const message = error instanceof Error ? error.message : "AI validation failed unexpectedly.";
@@ -75,7 +76,7 @@ async function main() {
           })
           .eq("id", taskId)
           .eq("project_id", task.project_id);
-        recovery = recovery.eq("automation_lease_owner", leaseOwner);
+        if (leaseOwner) recovery = recovery.eq("automation_lease_owner", leaseOwner);
         const { error: recoveryError } = await recovery;
         if (recoveryError) console.error("Axiom worker could not persist AI validation failure", recoveryError);
         await supabase.from("events").insert({

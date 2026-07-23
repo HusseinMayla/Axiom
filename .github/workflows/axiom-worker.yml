@@ -11,6 +11,10 @@ on:
         description: "Automation delivery lease owner, when dispatched by automation"
         required: false
         type: string
+      trigger:
+        description: "Whether this was started by automation or a human"
+        required: true
+        type: string
 
 concurrency:
   group: axiom-worker
@@ -27,6 +31,7 @@ jobs:
     env:
       AXIOM_TASK_ID: ${{ inputs.task_id }}
       AXIOM_AUTOMATION_LEASE_OWNER: ${{ inputs.lease_owner }}
+      AXIOM_EXECUTION_TRIGGER: ${{ inputs.trigger }}
       NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

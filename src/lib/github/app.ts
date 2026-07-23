@@ -233,7 +233,14 @@ export async function dispatchAxiomWorker(taskId: string, leaseOwner?: string) {
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ref: workerRepository.defaultBranch, inputs: { task_id: taskId, ...(leaseOwner ? { lease_owner: leaseOwner } : {}) } }),
+      body: JSON.stringify({
+        ref: workerRepository.defaultBranch,
+        inputs: {
+          task_id: taskId,
+          trigger: leaseOwner ? "automation" : "human",
+          ...(leaseOwner ? { lease_owner: leaseOwner } : {}),
+        },
+      }),
     },
   );
   return workerRepository.fullName;
