@@ -273,7 +273,7 @@ export function HarnessTopologyFusion({
     [processNextInQueue]
   );
 
-  // Poll real project events if projectId is provided (ONLY real backend events)
+  // Poll real project events if projectId is provided (ONLY real backend events from last 10s)
   useEffect(() => {
     if (!projectId || !mounted) return;
 
@@ -289,16 +289,17 @@ export function HarnessTopologyFusion({
         if (!isMounted) return;
 
         const itemsToSpawn: QueuedItem[] = [];
-        const initialLogs: PacketLog[] = [];
-        const isFirst = isFirstPoll.current;
+        const recentLogs: PacketLog[] = [];
+        const now = Date.now();
 
         if (autoRes.ok) {
           const autoData = await autoRes.json();
           const events = (autoData.events as { id: string; event_type: string; payload: unknown; created_at: string }[]) ?? [];
 
           for (const ev of events) {
-            const timeDiffMs = Date.now() - new Date(ev.created_at).getTime();
-            const isRecent = timeDiffMs < 30000;
+            const eventAgeMs = now - new Date(ev.created_at).getTime();
+            // ONLY process events created within the last 10 seconds (10,000 ms)
+            if (eventAgeMs > 10000) continue;
 
             if (!processedEventIds.current.has(ev.id)) {
               processedEventIds.current.add(ev.id);
@@ -367,13 +368,11 @@ export function HarnessTopologyFusion({
                   status: "PENDING",
                   payload: JSON.stringify(ev.payload, null, 2),
                 };
-                initialLogs.push(pktAck, pktReview);
-                if (!isFirst || isRecent) {
-                  itemsToSpawn.push(
-                    { packet: pktAck, pathKey: "validatorToEngineer", color: "#10b981" },
-                    { packet: pktReview, pathKey: "engineerToHuman", color: "#f59e0b" }
-                  );
-                }
+                recentLogs.push(pktAck, pktReview);
+                itemsToSpawn.push(
+                  { packet: pktAck, pathKey: "validatorToEngineer", color: "#10b981" },
+                  { packet: pktReview, pathKey: "engineerToHuman", color: "#f59e0b" }
+                );
                 continue;
               }
 
@@ -388,11 +387,8 @@ export function HarnessTopologyFusion({
                 payload: JSON.stringify(ev.payload, null, 2),
               };
 
-              initialLogs.push(pkt);
-
-              if (!isFirst || isRecent) {
-                itemsToSpawn.push({ packet: pkt, pathKey, color });
-              }
+              recentLogs.push(pkt);
+              itemsToSpawn.push({ packet: pkt, pathKey, color });
             }
           }
         }
@@ -403,9 +399,12 @@ export function HarnessTopologyFusion({
           if (Array.isArray(execData.repositoryTree)) setRepositoryTree(execData.repositoryTree.filter((path: unknown): path is string => typeof path === "string"));
           if (models) setModelLabels({ developer: models.developer === "gemini-3.5-flash" ? "Gemini 3.5 Flash" : "Gemini 3.1 Flash-Lite", engineer: models.engineer === "gemini-3.5-flash" ? "Gemini 3.5 Flash" : "Gemini 3.1 Flash-Lite" });
           setAgentStatuses((previous) => ({ ...previous, developer: execData.active ? "working" : "idle", engineer: execData.active ? "working" : openClarifications > 0 ? "waiting" : "idle" }));
-          const execEvents = (execData.taskRun?.events as { id: string; step: number; tool_name: string; tool_args: unknown; status: string; finished_at: string }[]) ?? [];
+          const execEvents = (execData.taskRun?.events as { id: string; step: number; tool_name: string; tool_args: unknown; status: string; finished_at: string; created_at?: string }[]) ?? [];
 
           for (const ev of execEvents) {
+            const eventAgeMs = now - new Date(ev.finished_at || ev.created_at || Date.now()).getTime();
+            if (eventAgeMs > 10000 && !execData.active) continue;
+
             if (!processedEventIds.current.has(ev.id)) {
               processedEventIds.current.add(ev.id);
               const timeStr = ev.finished_at ? new Date(ev.finished_at).toISOString().split("T")[1].slice(0, 12) : new Date().toISOString().split("T")[1].slice(0, 12);
@@ -419,7 +418,7 @@ export function HarnessTopologyFusion({
                 status: ev.status === "completed" ? "OK" : "ERROR",
                 payload: JSON.stringify({ step: ev.step, tool: ev.tool_name, args: ev.tool_args }, null, 2),
               };
-              initialLogs.push(pkt);
+              recentLogs.push(pkt);
               itemsToSpawn.push({ packet: pkt, pathKey: "developerToValidator", color: "#00ffcc" });
               setDeveloperActivity(`${ev.tool_name.replaceAll("_", " ")} · step ${ev.step}`);
               setDeveloperProgress(Math.min(100, Math.round((ev.step / Math.max(execData.taskRun?.maxSteps ?? 1, 1)) * 100)));
@@ -427,12 +426,8 @@ export function HarnessTopologyFusion({
           }
         }
 
-        if (initialLogs.length > 0) {
-          setPacketLogs((prev) => [...initialLogs, ...prev].slice(0, 30));
-        }
-
-        if (isFirst) {
-          isFirstPoll.current = false;
+        if (recentLogs.length > 0) {
+          setPacketLogs((prev) => [...recentLogs, ...prev].slice(0, 15));
         }
 
         if (itemsToSpawn.length > 0) {
