@@ -34,7 +34,7 @@ export default async function ProjectDashboardPage({
   const [{ data: tasks }, { data: questions }, { data: features }, { data: featureNodes }, { data: humanTodos }] = await Promise.all([
     supabase.from("tasks").select("id, state, objective, human_summary, human_actions, developer_report, execution_logs, review_feedback, execution_started_at, branch_name, head_sha, archived_at, features(name)").eq("project_id", projectId).order("created_at"),
     supabase.from("clarification_questions").select("id, question, rationale").eq("project_id", projectId).eq("status", "open").order("created_at"),
-    supabase.from("features").select("id, name, status, context_node_id").eq("project_id", projectId).in("status", ["active", "in_development", "on_hold", "completed", "needs_clarification"]).order("priority"),
+    supabase.from("features").select("id, name, status, context_node_id").eq("project_id", projectId).order("priority"),
     supabase.from("context_nodes").select("id, content").eq("project_id", projectId).eq("kind", "feature").in("status", ["draft", "approved"]),
     supabase.from("human_todos").select("id, title, rationale, suggested_action, human_comment").eq("project_id", projectId).eq("status", "open").order("created_at"),
   ]);
