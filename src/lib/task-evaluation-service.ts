@@ -3,9 +3,12 @@ import { reviewTask } from "@/lib/ai/task-execution";
 import { getBranchDiff, deleteRepositoryBranch, repositoryFromProjectSettings } from "@/lib/github/app";
 import { updateProjectImplementationState } from "@/lib/project-status";
 
-export async function evaluateCompletedTask(supabase: SupabaseClient, projectId: string, taskId: string, trigger: "human" | "automation" = "human") {
+export async function evaluateCompletedTask(supabase: SupabaseClient, projectId: string, taskId: string, trigger: "human" | "automation" = "human", automationLeaseOwner?: string) {
+  if (trigger === "automation" && !automationLeaseOwner) throw new Error("Automated evaluation requires its delivery lease owner.");
+  let taskQuery = supabase.from("tasks").select("id, state, feature_id, objective, developer_prompt, allowed_paths, acceptance_criteria, validation_commands, developer_report, branch_name, execution_attempt_count, automation_attempt_count, automation_lease_owner, features(context_node_id)").eq("id", taskId).eq("project_id", projectId);
+  if (automationLeaseOwner) taskQuery = taskQuery.eq("automation_lease_owner", automationLeaseOwner);
   const [{ data: task }, { data: project }] = await Promise.all([
-    supabase.from("tasks").select("id, state, feature_id, objective, developer_prompt, allowed_paths, acceptance_criteria, validation_commands, developer_report, branch_name, execution_attempt_count, automation_attempt_count, features(context_node_id)").eq("id", taskId).eq("project_id", projectId).maybeSingle(),
+    taskQuery.maybeSingle(),
     supabase.from("projects").select("settings, automation_state").eq("id", projectId).maybeSingle(),
   ]);
   if (!task) throw new Error("Task not found.");
@@ -63,15 +66,14 @@ export async function evaluateCompletedTask(supabase: SupabaseClient, projectId:
   }
   const now = new Date().toISOString();
   if (review.verdict === "pass") {
-    await supabase.from("tasks").update({ state: "waiting_for_human_approval", review_feedback: review.summary, updated_at: now }).eq("id", taskId);
+    await updateEvaluationOutcome(supabase, taskId, { state: "waiting_for_human_approval", review_feedback: review.summary, automation_lease_owner: null, updated_at: now }, automationLeaseOwner);
     await supabase.from("events").insert({ project_id: projectId, actor_type: "ai", event_type: "automation_evaluated", payload: { task_id: taskId, verdict: "pass", summary: review.summary } });
     return { verdict: "pass" as const, summary: review.summary, feedback: review.feedback, nextState: "waiting_for_human_approval" };
   }
-  await deleteRepositoryBranch(repository, task.branch_name).catch(() => undefined);
   const retryCapReached = trigger === "automation" && task.automation_attempt_count >= 2;
   const nextState = trigger === "human" ? "failed" : retryCapReached ? "waiting_for_approval" : "approved";
   const manualValidationFailure = trigger === "human";
-  await supabase.from("tasks").update({
+  await updateEvaluationOutcome(supabase, taskId, {
     state: nextState,
     branch_name: null,
     head_sha: null,
@@ -81,8 +83,12 @@ export async function evaluateCompletedTask(supabase: SupabaseClient, projectId:
     last_automation_outcome: manualValidationFailure ? "manual_validation_failed" : retryCapReached ? "retry_cap_reached" : "retry",
     automation_paused_at: manualValidationFailure || retryCapReached ? now : null,
     review_feedback: "AI Reviewer Rejected PR:\n" + review.feedback.join("\n") + (manualValidationFailure ? "\n\nAutomatic flow is frozen. Review the evidence, then return this task to the queue when you are ready to retry." : retryCapReached ? "\n\nAutomatic retry limit reached. Human approval is required before another run." : ""),
+    automation_lease_owner: null,
     updated_at: now,
-  }).eq("id", taskId);
+  }, automationLeaseOwner);
+  // The fenced state transition comes first. Once it succeeds, no newer review
+  // worker can claim this task, so this worker is safe to clean up the branch.
+  await deleteRepositoryBranch(repository, task.branch_name).catch(() => undefined);
   await updateProjectImplementationState({
     supabase: supabase as never,
     projectId,
@@ -91,6 +97,14 @@ export async function evaluateCompletedTask(supabase: SupabaseClient, projectId:
   });
   await supabase.from("events").insert({ project_id: projectId, actor_type: "ai", event_type: "automation_evaluated", payload: { task_id: taskId, verdict: "retry", summary: review.summary, retry_cap_reached: retryCapReached } });
   return { verdict: "retry" as const, summary: review.summary, feedback: review.feedback, nextState, retryCapReached, manualValidationFailure };
+}
+
+async function updateEvaluationOutcome(supabase: SupabaseClient, taskId: string, update: Record<string, unknown>, automationLeaseOwner?: string) {
+  let outcomeQuery = supabase.from("tasks").update(update).eq("id", taskId);
+  if (automationLeaseOwner) outcomeQuery = outcomeQuery.eq("automation_lease_owner", automationLeaseOwner);
+  const { data, error } = await outcomeQuery.select("id").maybeSingle();
+  if (error) throw new Error("Could not persist AI review outcome: " + error.message);
+  if (!data) throw new Error("AI review outcome was rejected because the automation lease is no longer current.");
 }
 
 async function recordReviewEvent(

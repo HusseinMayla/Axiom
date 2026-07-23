@@ -13,7 +13,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pro
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return Response.json({ error: "Sign in before viewing automation." }, { status: 401 });
   const [{ data: project }, { data: tasks }, { data: features }, { data: questions }, { data: leases }, { data: events }] = await Promise.all([
-    supabase.from("projects").select("automation_state, automation_pause_reason, automation_cooldown_until, automation_last_action_at").eq("id", projectId).maybeSingle(),
+    supabase.from("projects").select("automation_state, automation_pause_reason, automation_cooldown_until, automation_last_action_at, automation_daily_run_limit, automation_run_day, automation_runs_today").eq("id", projectId).maybeSingle(),
     supabase.from("tasks").select("state, category, feature_id, archived_at").eq("project_id", projectId).is("archived_at", null),
     supabase.from("features").select("id").eq("project_id", projectId).eq("status", "active"),
     supabase.from("clarification_questions").select("feature_id").eq("project_id", projectId).eq("status", "open"),
@@ -26,7 +26,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pro
   const planningTasks = (tasks ?? []).filter((task) => ["planned", "waiting_for_approval", "approved", "queued", "running", "pending_review", "waiting_for_human_approval"].includes(task.state));
   const canPropose = isPlanningScopeEligible({ category: "general" }, planningTasks, questions ?? [])
     || (features ?? []).some((feature) => isPlanningScopeEligible({ category: "feature", featureId: feature.id }, planningTasks, questions ?? []));
-  return Response.json({ ...automationSnapshot({ state: project.automation_state, pauseReason: project.automation_pause_reason, cooldownUntil: project.automation_cooldown_until, lastActionAt: project.automation_last_action_at, leases: leases ?? [], hasReview: activeBranch, hasQueuedTask, canPropose }), events: events ?? [] });
+  const runsToday = project.automation_run_day === new Date().toISOString().slice(0, 10) ? project.automation_runs_today ?? 0 : 0;
+  return Response.json({ ...automationSnapshot({ state: project.automation_state, pauseReason: project.automation_pause_reason, cooldownUntil: project.automation_cooldown_until, lastActionAt: project.automation_last_action_at, leases: leases ?? [], hasReview: activeBranch, hasQueuedTask, canPropose }), dailyRunLimit: project.automation_daily_run_limit ?? 3, runsToday, events: events ?? [] });
 }
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ projectId: string }> }) {

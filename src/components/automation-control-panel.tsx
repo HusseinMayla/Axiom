@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 type TimelineEvent = { id: string; event_type: string; payload: Record<string, unknown>; created_at: string };
 type Lane = { activeLease: { action: string; taskId: string | null; expiresAt: string } | null; nextAction: string; reason: string };
-type Snapshot = { state: "running" | "frozen"; pauseReason: string | null; cooldownUntil: string | null; lastActionAt: string | null; lanes: { planning: Lane; delivery: Lane }; events: TimelineEvent[] };
+type Snapshot = { state: "running" | "frozen"; pauseReason: string | null; cooldownUntil: string | null; lastActionAt: string | null; dailyRunLimit: number; runsToday: number; lanes: { planning: Lane; delivery: Lane }; events: TimelineEvent[] };
 
 export function AutomationControlPanel({ projectId }: { projectId: string }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -39,6 +39,7 @@ export function AutomationControlPanel({ projectId }: { projectId: string }) {
   return <section className="synthesis-panel automation-control-panel">
     <div className="synthesis-heading"><div><p className="eyebrow">AUTOMATION CONTROL</p><h2>{frozen ? "Automation frozen" : "Automation continuing"}</h2><p className="panel-copy">Planning and delivery are independent sequential lanes.</p></div><div className="automation-actions"><button className="button secondary" onClick={cycle} disabled={!snapshot || pending || cycling || frozen}>{cycling ? "Claiming…" : "Run automation cycle"}</button><button className="button secondary" onClick={toggle} disabled={!snapshot || pending}>{pending ? "Updating…" : frozen ? "Continue automation" : "Freeze automation"}</button></div></div>
     <div className="automation-lanes"><LaneCard title="Planning lane" lane={snapshot?.lanes.planning} /><LaneCard title="Delivery lane" lane={snapshot?.lanes.delivery} /></div>
+    {snapshot && <p className="automation-next">Automatic executions today: {snapshot.runsToday} / {snapshot.dailyRunLimit}</p>}
     {snapshot?.lastActionAt && <p className="automation-next">Last control change: {new Date(snapshot.lastActionAt).toLocaleString()}</p>}
     {snapshot?.cooldownUntil && <p className="form-error">Provider cooldown until {new Date(snapshot.cooldownUntil).toLocaleTimeString()}. No new automation work will start before then.</p>}
     {snapshot?.events?.length ? <ol className="automation-timeline">{snapshot.events.map((event) => <li key={event.id}><strong>{timelineTitle(event)}</strong><span>{timelineDetail(event)}</span><small>{new Date(event.created_at).toLocaleString()}</small></li>)}</ol> : <p className="queue-empty">No automation decisions have been recorded yet.</p>}

@@ -30,6 +30,7 @@ type TaskRecord = {
   human_actions: unknown;
   branch_name: string | null;
   automation_attempt_count: number;
+  automation_lease_owner: string | null;
   features: Array<{ context_node_id: string | null }> | null;
 };
 
@@ -43,6 +44,9 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
   if (project.state !== "active") return Response.json({ error: "Approve project context before running a task." }, { status: 409 });
   if (trigger === "human" && project.automation_state !== "frozen") {
     return Response.json({ error: "Freeze automatic flow before starting a task manually." }, { status: 409 });
+  }
+  if (trigger === "automation" && !automationLeaseOwner) {
+    return Response.json({ error: "Automated execution requires its delivery lease owner." }, { status: 409 });
   }
 
   const repository = repositoryFromProjectSettings(project.settings);
@@ -63,15 +67,17 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
 
   let taskQuery = supabase
     .from("tasks")
-    .select("id, category, feature_id, objective, developer_prompt, allowed_paths, acceptance_criteria, validation_commands, execution_logs, human_actions, branch_name, automation_attempt_count, features(context_node_id)")
+    .select("id, category, feature_id, objective, developer_prompt, allowed_paths, acceptance_criteria, validation_commands, execution_logs, human_actions, branch_name, automation_attempt_count, automation_lease_owner, features(context_node_id)")
     .eq("project_id", projectId)
     .in("state", requestedTaskId ? ["approved", "queued", "failed", "running"] : ["approved", "queued", "failed"])
     .is("archived_at", null);
   if (requestedTaskId) taskQuery = taskQuery.eq("id", requestedTaskId);
+  if (automationLeaseOwner) taskQuery = taskQuery.eq("automation_lease_owner", automationLeaseOwner);
   const { data: task } = await taskQuery.order("category").order("priority").order("created_at").limit(1).maybeSingle();
   if (!task) return Response.json({ type: "idle", message: "No approved task is waiting for manual execution." });
 
   const typedTask = task as TaskRecord;
+  const taskLeaseOwner = trigger === "automation" ? automationLeaseOwner : undefined;
   const allowedPaths = stringList(typedTask.allowed_paths);
   const allowProjectWideWrites = typedTask.category === "general";
   const acceptanceCriteria = stringList(typedTask.acceptance_criteria);
@@ -139,7 +145,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
     session = await createExecutionSession({ taskId: typedTask.id, repository, installationToken: token, existingBranchName: typedTask.branch_name });
     setActiveRunContainer(typedTask.id, session.containerName);
     assertRunActive(activeRun);
-    await supabase.from("tasks").update({
+    let startTaskQuery = supabase.from("tasks").update({
       state: "running",
       branch_name: session.branchName,
       base_sha: session.baseSha,
@@ -148,6 +154,10 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
       ...(trigger === "automation" ? { automation_attempt_count: typedTask.automation_attempt_count + 1, last_automation_outcome: "running", automation_paused_at: null } : {}),
       updated_at: new Date().toISOString(),
     }).eq("id", typedTask.id);
+    if (taskLeaseOwner) startTaskQuery = startTaskQuery.eq("automation_lease_owner", taskLeaseOwner);
+    const { data: startedTask, error: startTaskError } = await startTaskQuery.select("id").maybeSingle();
+    if (startTaskError) throw new Error("Could not mark the task as running: " + startTaskError.message);
+    if (!startedTask) throw new Error("Automation delivery lease was lost before execution could begin.");
     await supabase.from("task_execution_events").delete().eq("task_id", typedTask.id);
     await setCurrentStatus({
       supabase,
@@ -161,7 +171,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
     assertRunActive(activeRun);
     if (dependencySetup) {
       executionLogs.push({ attempt: 0, command: dependencySetup.command, exit_code: dependencySetup.exitCode, output: sanitize(dependencySetup.output) });
-      await persistExecutionProgress(supabase, typedTask.id, 0, executionLogs);
+      await persistExecutionProgress(supabase, typedTask.id, 0, executionLogs, taskLeaseOwner);
       await recordExecutionEvent(supabase, projectId, typedTask.id, 0, "prepare_dependencies", { command: dependencySetup.command }, dependencySetup, dependencySetup.exitCode === 0 ? "completed" : "failed");
       if (dependencySetup.exitCode !== 0) {
         throw new Error("Workspace dependency setup failed: " + dependencySetup.output.slice(-2000));
@@ -203,7 +213,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
             changes_made: decision.text.slice(0, 2000) || "Agent did not produce a structured report.",
           } as unknown as DeveloperReport;
           executionLogs.push({ attempt: step, command: "agent.auto_finish", exit_code: 0, output: "Agent could not produce a valid finish_task on the final step. The harness auto-finished the task with available work." });
-          await persistExecutionProgress(supabase, typedTask.id, step, executionLogs);
+          await persistExecutionProgress(supabase, typedTask.id, step, executionLogs, taskLeaseOwner);
           await recordExecutionEvent(supabase, projectId, typedTask.id, step, "auto_finish", {}, { report: execution, thinking_ms: thinkingMs, duration_ms: Date.now() - stepStartMs }, "completed");
           break;
         }
@@ -214,7 +224,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
             changes_made: decision.text.slice(0, 2000) || "Agent completed work but did not invoke finish_task tool format.",
           } as unknown as DeveloperReport;
           executionLogs.push({ attempt: step, command: "agent.auto_finish", exit_code: 0, output: "Agent exhausted invalid tool-call budget. The harness auto-finished the task with completed work." });
-          await persistExecutionProgress(supabase, typedTask.id, step, executionLogs);
+          await persistExecutionProgress(supabase, typedTask.id, step, executionLogs, taskLeaseOwner);
           await recordExecutionEvent(supabase, projectId, typedTask.id, step, "auto_finish", {}, { report: execution, thinking_ms: thinkingMs, duration_ms: Date.now() - stepStartMs }, "completed");
           break;
         }
@@ -222,7 +232,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
           ? "No valid tool call was returned. If you have completed the task and verified build/tests, call finish_task IMMEDIATELY with a report object (e.g. finish_task({ report: { summary: 'Task completed', changes_made: '...' } })). Do not return plain text prose."
           : "Only multiple inspect_files calls may share a turn. Commands, edits, validation, and finish_task must be called alone.";
         executionLogs.push({ attempt: step, command: "agent.invalid_tool_call", exit_code: 1, output: message + " " + decision.text.slice(0, 1000) });
-        await persistExecutionProgress(supabase, typedTask.id, step, executionLogs);
+        await persistExecutionProgress(supabase, typedTask.id, step, executionLogs, taskLeaseOwner);
         await recordExecutionEvent(supabase, projectId, typedTask.id, step, "invalid_tool_call", {}, { error: message, thinking_ms: thinkingMs, action_ms: Date.now() - stepStartMs, duration_ms: Date.now() - stepStartMs }, "failed");
         conversation.push({ role: "user", parts: [{ text: message }] });
         continue;
@@ -251,7 +261,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
           executionLogs.push({ attempt: step, command: "agent.command_rejected " + call.args.command, exit_code: 1, output: error });
           await recordExecutionEvent(supabase, projectId, typedTask.id, step, "run_command", call.args, { error, thinking_ms: thinkingMs, action_ms: Date.now() - actionStartMs, duration_ms: Date.now() - stepStartMs }, "failed");
           responses.push({ functionResponse: { name: call.name, id: call.id, response: { error } } });
-          await persistExecutionProgress(supabase, typedTask.id, step, executionLogs);
+          await persistExecutionProgress(supabase, typedTask.id, step, executionLogs, taskLeaseOwner);
           conversation.push({ role: "user", parts: responses });
           continue;
         }
@@ -286,7 +296,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
           executionLogs.push({ attempt: step, command: "agent.validation_rejected " + unapproved.join(", "), exit_code: 1, output: error });
           await recordExecutionEvent(supabase, projectId, typedTask.id, step, "run_validation", call.args, { error, thinking_ms: thinkingMs, action_ms: Date.now() - actionStartMs, duration_ms: Date.now() - stepStartMs }, "failed");
           responses.push({ functionResponse: { name: call.name, id: call.id, response: { error } } });
-          await persistExecutionProgress(supabase, typedTask.id, step, executionLogs);
+          await persistExecutionProgress(supabase, typedTask.id, step, executionLogs, taskLeaseOwner);
           conversation.push({ role: "user", parts: responses });
           continue;
         }
@@ -300,7 +310,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
         execution = calls[0].args.report;
         const actionMs = Date.now() - actionStartMs;
         executionLogs.push({ attempt: step, command: "agent.finish", exit_code: 0, output: "Agent returned its completion report." });
-        await persistExecutionProgress(supabase, typedTask.id, step, executionLogs);
+        await persistExecutionProgress(supabase, typedTask.id, step, executionLogs, taskLeaseOwner);
         await recordExecutionEvent(supabase, projectId, typedTask.id, step, "finish_task", {}, { report: execution, thinking_ms: thinkingMs, action_ms: actionMs, duration_ms: Date.now() - stepStartMs }, "completed");
         break;
       }
@@ -314,7 +324,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
         changes_made: "See workspace diff for actual changes made by the agent.",
       } as unknown as DeveloperReport;
       executionLogs.push({ attempt: maxAgentSteps, command: "agent.auto_finish", exit_code: 0, output: "Harness auto-finished after step limit." });
-      await persistExecutionProgress(supabase, typedTask.id, maxAgentSteps, executionLogs);
+      await persistExecutionProgress(supabase, typedTask.id, maxAgentSteps, executionLogs, taskLeaseOwner);
       await recordExecutionEvent(supabase, projectId, typedTask.id, maxAgentSteps, "auto_finish", {}, { report: execution }, "completed");
     }
 
@@ -366,7 +376,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
         developer_report: report,
         execution_logs: executionLogs,
         review_feedback: retainForHuman ? feedback + " Automatic flow is frozen, so this task remains in Active task until you return it to the queue or remove it." : feedback,
-      });
+      }, taskLeaseOwner);
       await setCurrentStatus({
         supabase,
         contextNode: typedTask.category === "feature" ? featureNode : rootNode,
@@ -388,7 +398,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
         developer_report: report,
         execution_logs: executionLogs,
         review_feedback: feedback,
-      });
+      }, taskLeaseOwner);
       await setCurrentStatus({ supabase, contextNode: typedTask.category === "feature" ? featureNode : rootNode, task: typedTask, state: "completed", remainingWork: [], latestReport: report.dashboard_summary || report.summary });
       return Response.json({ type: "completed_noop", taskId: typedTask.id, message: feedback });
     }
@@ -404,7 +414,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
       developer_report: report,
       execution_logs: executionLogs,
       review_feedback: "Developer completed implementation successfully. Ready for AI Reviewer.",
-    });
+    }, taskLeaseOwner);
     await setCurrentStatus({ supabase, contextNode: typedTask.category === "feature" ? featureNode : rootNode, task: typedTask, state: "awaiting_review", remainingWork: ["Run AI Reviewer or inspect branch " + session.branchName + "."], latestReport: report.dashboard_summary || report.summary });
     return Response.json({ type: "pending_review", taskId: typedTask.id, branchName: session.branchName, headSha });
   } catch (error) {
@@ -418,7 +428,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
         state: "failed",
         execution_logs: [...executionLogs, { attempt: 0, command: "orchestrator.cancelled", exit_code: 1, output: error.message }],
         review_feedback: "Execution was cancelled by a human. No branch was pushed.",
-      }).catch(() => undefined);
+      }, taskLeaseOwner).catch(() => undefined);
       return Response.json({ type: "cancelled", taskId: typedTask.id }, { status: 409 });
     }
     if (pushedBranchName) {
@@ -431,7 +441,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
       execution_logs: [...executionLogs, { attempt: 0, command: "orchestrator", exit_code: 1, output: sanitize(error instanceof Error ? error.message : "Unknown execution error") }],
       review_feedback: rateLimited ? "Provider rate limit persisted after the harness retry window. Automation will resume after cooldown." : "Execution infrastructure failed before review.",
       ...(rateLimited && trigger === "automation" ? { automation_attempt_count: typedTask.automation_attempt_count, last_automation_outcome: "rate_limited" } : {}),
-    });
+    }, taskLeaseOwner);
     return Response.json({ error: rateLimited ? "Developer execution is rate-limited; automation will retry after cooldown." : "Task execution failed safely. Inspect the task report and try again after resolving the issue.", rateLimited }, { status: rateLimited ? 429 : 502 });
   } finally {
     if (session) await destroyExecutionSession(session);
@@ -466,17 +476,20 @@ async function dispatchNextTaskToWorker(supabase: SupabaseClient, projectId: str
     taskId = nextTask?.id;
   }
   if (!taskId) return Response.json({ type: "idle", message: "No approved task is waiting for execution." });
-  const { data: claimedTask, error: claimError } = await supabase.from("tasks")
+  let claimTaskQuery = supabase.from("tasks")
     .update({ state: "running", execution_started_at: new Date().toISOString(), review_feedback: "Task is waiting for the isolated GitHub Actions worker to start.", updated_at: new Date().toISOString() })
-    .eq("id", taskId).eq("project_id", projectId).in("state", ["approved", "queued", "failed"])
-    .select("id").maybeSingle();
+    .eq("id", taskId).eq("project_id", projectId).in("state", ["approved", "queued", "failed"]);
+  if (automationLeaseOwner) claimTaskQuery = claimTaskQuery.eq("automation_lease_owner", automationLeaseOwner);
+  const { data: claimedTask, error: claimError } = await claimTaskQuery.select("id").maybeSingle();
   if (claimError || !claimedTask) return Response.json({ error: "This task has already been claimed or is no longer ready to run.", code: "task_already_claimed" }, { status: 409 });
   try {
     const workerRepository = await dispatchAxiomWorker(taskId, automationLeaseOwner);
     return Response.json({ type: "dispatched", taskId, message: "Task dispatched to the isolated GitHub Actions worker.", workerRepository });
   } catch (error) {
     const diagnostic = error instanceof Error ? error.message : String(error);
-    await supabase.from("tasks").update({ state: "approved", execution_started_at: null, review_feedback: "Could not dispatch the GitHub Actions worker: " + diagnostic, updated_at: new Date().toISOString() }).eq("id", taskId).eq("project_id", projectId);
+    let resetTaskQuery = supabase.from("tasks").update({ state: "approved", execution_started_at: null, automation_lease_owner: automationLeaseOwner ? null : undefined, review_feedback: "Could not dispatch the GitHub Actions worker: " + diagnostic, updated_at: new Date().toISOString() }).eq("id", taskId).eq("project_id", projectId);
+    if (automationLeaseOwner) resetTaskQuery = resetTaskQuery.eq("automation_lease_owner", automationLeaseOwner);
+    await resetTaskQuery;
     console.error("Axiom could not dispatch the GitHub Actions worker", { projectId, taskId, diagnostic });
     return Response.json({ error: "Could not dispatch the GitHub Actions worker.", code: "worker_dispatch_failed", diagnostic }, { status: 502 });
   }
@@ -526,11 +539,19 @@ function contextStatus(content: unknown) {
   return ((content ?? {}) as Record<string, unknown>).current_status ?? {};
 }
 
-async function finishTask(supabase: SupabaseClient, taskId: string, update: Record<string, unknown>) {
+async function finishTask(supabase: SupabaseClient, taskId: string, update: Record<string, unknown>, automationLeaseOwner?: string) {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const { error } = await supabase.from("tasks").update({ ...update, execution_finished_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", taskId);
-      if (!error) return;
+      let taskUpdateQuery = supabase.from("tasks").update({
+        ...update,
+        ...(automationLeaseOwner && update.state !== "pending_review" ? { automation_lease_owner: null } : {}),
+        execution_finished_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }).eq("id", taskId);
+      if (automationLeaseOwner) taskUpdateQuery = taskUpdateQuery.eq("automation_lease_owner", automationLeaseOwner);
+      const { data, error } = await taskUpdateQuery.select("id").maybeSingle();
+      if (!error && data) return;
+      if (!error) throw new Error("Task transition was rejected because the automation lease is no longer current.");
       if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
       else throw new Error("Could not persist the task outcome: " + error.message);
     } catch (err) {
@@ -545,6 +566,7 @@ async function persistExecutionProgress(
   taskId: string,
   step: number,
   logs: Array<{ attempt: number; command: string; exit_code: number; output: string }>,
+  automationLeaseOwner?: string,
 ) {
   const boundedLogs = logs.map((log) => ({
     ...log,
@@ -553,12 +575,15 @@ async function persistExecutionProgress(
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const { error } = await supabase.from("tasks").update({
+      let progressQuery = supabase.from("tasks").update({
         execution_attempt_count: step,
         execution_logs: boundedLogs,
         updated_at: new Date().toISOString(),
       }).eq("id", taskId);
-      if (!error) return;
+      if (automationLeaseOwner) progressQuery = progressQuery.eq("automation_lease_owner", automationLeaseOwner);
+      const { data, error } = await progressQuery.select("id").maybeSingle();
+      if (!error && data) return;
+      if (!error) throw new Error("Task progress update was rejected because the automation lease is no longer current.");
       if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 300));
       else console.error("Could not persist execution progress:", error.message);
     } catch (err) {

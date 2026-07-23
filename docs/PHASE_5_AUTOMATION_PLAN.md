@@ -85,6 +85,11 @@ type AutomationSettings = {
 };
 ```
 
+The current implementation stores this as project-level automation columns. The
+default is three automatic executions per project per database day; a lease claim
+increments the counter atomically, so concurrent scheduler processes cannot exceed
+the cap. Planning and AI review remain eligible after the execution cap is reached.
+
 ### Freeze / continue control
 
 `Freeze automation` prevents the scheduler from claiming any new queued task for the
@@ -107,6 +112,10 @@ An automated execution is eligible only when all of the following are true:
 
 Automation must write an auditable event for each skipped eligibility rule, but it
 should coalesce repeated identical skips to avoid event noise.
+
+The execution cap is enforced by the database lease-claim function, not merely by
+the scheduler's preflight check. The preflight check exposes a clear idle reason to
+the UI; the database is the concurrency-safe final authority.
 
 ### Proposal triggers
 

@@ -24,7 +24,7 @@ export async function runAutomationCycle({ supabase, projectId, owner = "automat
   // owner must still be unique per cycle so an expired worker can never heartbeat
   // or release a newer worker's lease.
   const cycleOwner = owner + "-" + randomUUID();
-  const { data: project } = await supabase.from("projects").select("automation_state, automation_cooldown_until, state").eq("id", projectId).maybeSingle();
+  const { data: project } = await supabase.from("projects").select("automation_state, automation_cooldown_until, automation_daily_run_limit, automation_run_day, automation_runs_today, state").eq("id", projectId).maybeSingle();
   if (!project || project.state !== "active") return [idle("Project context is not active.")];
   if (project.automation_state === "frozen") return [idle("Automation is frozen by a human.")];
   if (project.automation_cooldown_until && new Date(project.automation_cooldown_until).getTime() > Date.now()) {
@@ -39,16 +39,19 @@ export async function runAutomationCycle({ supabase, projectId, owner = "automat
   ]);
 
   const openTasks = tasks ?? [];
+  const today = new Date().toISOString().slice(0, 10);
+  const dailyRunLimit = project.automation_daily_run_limit ?? 3;
+  const runsToday = project.automation_run_day === today ? project.automation_runs_today ?? 0 : 0;
   // Failed and terminal tasks are historical outcomes, not active work. They must
   // not prevent the planner from proposing the next task for their scope.
   const planningTasks = openTasks.filter((task) => PLANNING_OCCUPYING_STATES.has(task.state));
   return Promise.all([
-    runDeliveryLane(supabase, projectId, cycleOwner, openTasks),
+    runDeliveryLane(supabase, projectId, cycleOwner, openTasks, { runsToday, dailyRunLimit }),
     runPlanningLane(supabase, projectId, cycleOwner, planningTasks, features ?? [], questions ?? []),
   ]);
 }
 
-async function runDeliveryLane(supabase: Supabase, projectId: string, owner: string, openTasks: Array<{ id: string; state: string; objective: string }>): Promise<CycleResult> {
+async function runDeliveryLane(supabase: Supabase, projectId: string, owner: string, openTasks: Array<{ id: string; state: string; objective: string }>, executionBudget: { runsToday: number; dailyRunLimit: number }): Promise<CycleResult> {
   const deliveryBlockers = openTasks.filter((task) => ["running", "waiting_for_human_approval"].includes(task.state));
   if (deliveryBlockers.length) return idle("Delivery is blocked by an active run or unresolved branch.", { blocking_tasks: taskDetails(deliveryBlockers) });
   const review = openTasks.find((task) => task.state === "pending_review");
@@ -58,6 +61,9 @@ async function runDeliveryLane(supabase: Supabase, projectId: string, owner: str
   }
   if (review) return idle("AI review is already being claimed by another automation cycle.", { blocking_tasks: taskDetails([review]), required_action: "evaluate", lease: await leaseDetails(supabase, projectId, "delivery") });
   const queued = openTasks.find((task) => ["approved", "queued"].includes(task.state));
+  if (queued && executionBudget.runsToday >= executionBudget.dailyRunLimit) {
+    return idle("Automatic execution reached its daily cap of " + executionBudget.dailyRunLimit + " run" + (executionBudget.dailyRunLimit === 1 ? "" : "s") + ".", { runs_today: executionBudget.runsToday, daily_run_limit: executionBudget.dailyRunLimit, task_id: queued.id });
+  }
   if (queued && await claim(supabase, projectId, "delivery", queued.id, "execute", owner)) {
     await event(supabase, projectId, "automation_execution_started", { task_id: queued.id, lane: "delivery" });
     return execute(supabase, projectId, queued.id, owner);
@@ -86,7 +92,7 @@ async function runPlanningLane(supabase: Supabase, projectId: string, owner: str
 
 async function evaluate(supabase: Supabase, projectId: string, taskId: string, owner: string): Promise<CycleResult> {
   try {
-    const review = await withLeaseHeartbeat(supabase, projectId, "delivery", owner, () => evaluateCompletedTask(supabase, projectId, taskId, "automation"));
+    const review = await withLeaseHeartbeat(supabase, projectId, "delivery", owner, () => evaluateCompletedTask(supabase, projectId, taskId, "automation", owner));
     return result("delivery", "evaluate", taskId, null, review.verdict === "pass"
       ? "Bot evaluation passed; the branch is waiting for human approval."
       : review.verdict === "deferred" ? "Bot evaluation was deferred because automation was frozen."
@@ -128,7 +134,7 @@ async function execute(supabase: Supabase, projectId: string, taskId: string, ow
     }
     if (body.type === "pending_review") {
       await event(supabase, projectId, "automation_evaluation_started", { task_id: taskId, lane: "delivery", message: "Execution finished; AI review started immediately." });
-      const review = await evaluateCompletedTask(supabase, projectId, taskId, "automation");
+      const review = await evaluateCompletedTask(supabase, projectId, taskId, "automation", owner);
       return result("delivery", "evaluate", taskId, null, review.verdict === "pass"
         ? "Execution completed and AI review passed immediately; the branch is waiting for human approval."
         : review.verdict === "deferred" ? "Execution completed; AI review was deferred because automation was frozen."
@@ -294,17 +300,11 @@ async function recoverExpiredLeases(supabase: Supabase, projectId: string) {
     if (recovered !== true) continue;
     await event(supabase, projectId, "automation_lease_recovered", { lane: lease.lane, task_id: lease.task_id, action: lease.action, owner: lease.owner, expired_at: lease.expires_at, reason: "Lease expired before the owner released it." });
     if (lease.action !== "execute" || !lease.task_id) continue;
-    const { data: task } = await supabase.from("tasks").select("state").eq("id", lease.task_id).eq("project_id", projectId).maybeSingle();
-    if (task?.state !== "running") continue;
-    await supabase.from("tasks").update({
-      state: "failed",
-      execution_finished_at: new Date().toISOString(),
-      review_feedback: "Automation worker lease expired before the run completed. A human must acknowledge or reset this task before another execution.",
-      last_automation_outcome: "lease_expired",
-      automation_paused_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }).eq("id", lease.task_id);
-    await event(supabase, projectId, "automation_recovery_requires_human", { task_id: lease.task_id, reason: "Execution worker lease expired while the task was running." });
+    const { data: failedTask, error: failTaskError } = await supabase.rpc("fail_recovered_automation_task", { p_project_id: projectId, p_task_id: lease.task_id, p_owner: lease.owner });
+    if (failTaskError) throw new Error("Could not fence the expired automation task: " + failTaskError.message);
+    if (failedTask === true) {
+      await event(supabase, projectId, "automation_recovery_requires_human", { task_id: lease.task_id, reason: "Execution worker lease expired while the task was running." });
+    }
   }
   const { data: stalePlanning, error: staleError } = await supabase.from("automation_leases").select("lane, task_id, action, owner, expires_at, heartbeat_at").eq("project_id", projectId).eq("lane", "planning").lt("heartbeat_at", stalePlanningBefore);
   if (staleError) throw new Error("Could not inspect stale planning leases: " + staleError.message);
@@ -323,6 +323,7 @@ async function leaseDetails(supabase: Supabase, projectId: string, lane: "planni
 
 async function withLeaseHeartbeat<T>(supabase: Supabase, projectId: string, lane: "planning" | "delivery", owner: string, work: () => Promise<T>, onLeaseLost?: () => Promise<unknown>): Promise<T> {
   let lost = false;
+  let lostError: Error | null = null;
   const heartbeat = async () => {
     const { data, error } = await supabase.rpc("heartbeat_automation_lease", { p_project_id: projectId, p_lane: lane, p_owner: owner, p_expires_at: new Date(Date.now() + LEASE_TTL_MS).toISOString() });
     if (error || data !== true) throw new Error("Automation lease heartbeat failed: " + (error?.message ?? "lease is no longer owned"));
@@ -332,12 +333,17 @@ async function withLeaseHeartbeat<T>(supabase: Supabase, projectId: string, lane
     void heartbeat().catch((error) => {
       if (lost) return;
       lost = true;
+      lostError = error instanceof Error ? error : new Error("Automation lease heartbeat failed");
       console.error("Automation lease heartbeat failed", error);
       void event(supabase, projectId, "automation_heartbeat_failed", { lane, reason: error instanceof Error ? error.message : "Unknown heartbeat failure" });
       void onLeaseLost?.();
     });
   }, LEASE_HEARTBEAT_MS);
-  try { return await work(); } finally { clearInterval(timer); }
+  try {
+    const value = await work();
+    if (lostError) throw lostError;
+    return value;
+  } finally { clearInterval(timer); }
 }
 
 async function cooldown(supabase: Supabase, projectId: string, reason: string) {
