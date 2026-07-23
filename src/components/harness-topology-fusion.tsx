@@ -209,6 +209,7 @@ export function HarnessTopologyFusion({
 
   // Fixed initial timestamps for SSR
   const [packetLogs, setPacketLogs] = useState<PacketLog[]>([]);
+  const [rateLimitNotice, setRateLimitNotice] = useState<"none" | "busy" | "daily_limit">("none");
 
   // Synchronized FIFO Queue Processor using direct path strings
   const processNextInQueue = useCallback(() => {
@@ -294,6 +295,13 @@ export function HarnessTopologyFusion({
 
         if (autoRes.ok) {
           const autoData = await autoRes.json();
+          if (autoData.cooldownUntil && new Date(autoData.cooldownUntil).getTime() > now) {
+            setRateLimitNotice("busy");
+          } else if (typeof autoData.runsToday === "number" && typeof autoData.dailyRunLimit === "number" && autoData.runsToday >= autoData.dailyRunLimit) {
+            setRateLimitNotice("daily_limit");
+          } else {
+            setRateLimitNotice("none");
+          }
           const events = (autoData.events as { id: string; event_type: string; payload: unknown; created_at: string }[]) ?? [];
 
           for (const ev of events) {
@@ -656,6 +664,16 @@ export function HarnessTopologyFusion({
               AXIOM TOPOLOGY SUBNET 10.0.0.0/24
             </span>
             <span className="text-xs text-slate-400">STATE: HARNESS ACTIVE</span>
+            {rateLimitNotice === "busy" && (
+              <span className="rounded bg-amber-500/20 px-2.5 py-0.5 text-[10px] font-bold text-amber-400 border border-amber-500/40 flex items-center gap-1.5 animate-pulse">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-400" /> SERVER IS BUSY
+              </span>
+            )}
+            {rateLimitNotice === "daily_limit" && (
+              <span className="rounded bg-rose-500/20 px-2.5 py-0.5 text-[10px] font-bold text-rose-400 border border-rose-500/40 flex items-center gap-1.5 animate-pulse">
+                <span className="h-1.5 w-1.5 rounded-full bg-rose-400" /> API RATE LIMIT REACHED
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-6 text-[11px] text-slate-400">
             <span className="flex items-center gap-1.5">

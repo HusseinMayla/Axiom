@@ -29,7 +29,7 @@ export async function runAutomationCycle({ supabase, projectId, owner = "automat
   if (!project || project.state !== "active") return [idle("Project context is not active.")];
   if (project.automation_state === "frozen") return [idle("Automation is frozen by a human.")];
   if (project.automation_cooldown_until && new Date(project.automation_cooldown_until).getTime() > Date.now()) {
-    return [idle("Automation is cooling down after a provider rate limit until " + project.automation_cooldown_until + ".")];
+    return [idle("Server is busy: Rate limit per minute reached. Cooling down until " + project.automation_cooldown_until + ".")];
   }
 
   await recoverExpiredLeases(supabase, projectId);
@@ -68,7 +68,7 @@ async function runDeliveryLane(supabase: Supabase, projectId: string, owner: str
   if (review) return idle("AI review is already being claimed by another automation cycle.", { blocking_tasks: taskDetails([review]), required_action: "evaluate", lease: await leaseDetails(supabase, projectId, "delivery") });
   const queued = openTasks.find((task) => ["approved", "queued"].includes(task.state));
   if (queued && executionBudget.runsToday >= executionBudget.dailyRunLimit) {
-    return idle("Automatic execution reached its daily cap of " + executionBudget.dailyRunLimit + " run" + (executionBudget.dailyRunLimit === 1 ? "" : "s") + ".", { runs_today: executionBudget.runsToday, daily_run_limit: executionBudget.dailyRunLimit, task_id: queued.id });
+    return idle("API rate limit reached: Daily limit of " + executionBudget.dailyRunLimit + " run" + (executionBudget.dailyRunLimit === 1 ? "" : "s") + " reached.", { runs_today: executionBudget.runsToday, daily_run_limit: executionBudget.dailyRunLimit, task_id: queued.id });
   }
   if (queued && await claim(supabase, projectId, "delivery", queued.id, "execute", owner)) {
     await event(supabase, projectId, "automation_execution_started", { task_id: queued.id, lane: "delivery" });
@@ -122,8 +122,8 @@ async function evaluate(supabase: Supabase, projectId: string, taskId: string, o
       : review.retryCapReached ? "Bot evaluation reached the automatic retry cap; human approval is required." : "Bot evaluation requested a retry; the task returned to the queue.");
   } catch (error) {
     if (isGeminiRateLimitError(error)) {
-      await cooldown(supabase, projectId, "Bot evaluation remained rate-limited after retrying for 100 seconds.");
-      return result("delivery", "evaluate", taskId, null, "Bot evaluation is rate-limited; automation is cooling down.");
+      await cooldown(supabase, projectId, "Server is busy: Bot evaluation remained rate-limited after retrying for 100 seconds.");
+      return result("delivery", "evaluate", taskId, null, "Server is busy: Rate limit per minute reached. Automation is cooling down.");
     }
     throw error;
   } finally {
@@ -137,8 +137,8 @@ async function execute(supabase: Supabase, projectId: string, taskId: string, ow
     const response = await withLeaseHeartbeat(supabase, projectId, "delivery", owner, () => executeNextTask(supabase, projectId, "automation", taskId, owner), () => cancelActiveRun(taskId));
     const body = await response.json() as { type?: string; error?: string; message?: string; taskId?: string; rateLimited?: boolean; code?: string; diagnostic?: string; next_step?: string };
     if (body.rateLimited) {
-      await cooldown(supabase, projectId, "Developer execution remained rate-limited after retrying for 100 seconds.");
-      return result("delivery", "execute", taskId, null, "Developer execution is rate-limited; automation is cooling down.");
+      await cooldown(supabase, projectId, "Server is busy: Developer execution remained rate-limited after retrying for 100 seconds.");
+      return result("delivery", "execute", taskId, null, "Server is busy: Rate limit per minute reached. Automation is cooling down.");
     }
     if (!response.ok || body.error) {
       const reason = [body.error ?? "Automation could not start the approved task.", body.diagnostic, body.next_step]
@@ -219,7 +219,7 @@ async function plan(supabase: Supabase, projectId: string, owner: string, featur
         lane: "planning",
         feature_id: featureId,
         provider_message: info.message,
-        message: "AI planner was rate-limited; retry " + info.attempt + " begins in " + (info.retryInMs / 1000) + " seconds.",
+        message: "Server is busy: AI planner was rate-limited per minute; retry " + info.attempt + " begins in " + (info.retryInMs / 1000) + " seconds.",
       }),
     });
     await assertLeaseOwned(supabase, projectId, "planning", owner);
@@ -237,8 +237,8 @@ async function plan(supabase: Supabase, projectId: string, owner: string, featur
     });
   } catch (error) {
     if (isGeminiRateLimitError(error)) {
-      await cooldown(supabase, projectId, "Task planning remained rate-limited after retrying for 100 seconds.");
-      return result("planning", "propose", null, featureId, "Task planning is rate-limited; automation is cooling down.", { outcome: "rate_limited" });
+      await cooldown(supabase, projectId, "Server is busy: Task planning remained rate-limited after retrying for 100 seconds.");
+      return result("planning", "propose", null, featureId, "Server is busy: Rate limit per minute reached. Automation is cooling down.", { outcome: "rate_limited" });
     }
     throw error;
   } finally { await release(supabase, projectId, "planning", owner); }

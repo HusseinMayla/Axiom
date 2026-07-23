@@ -136,16 +136,21 @@ export async function PATCH(
     if (featureError) return Response.json({ error: "Task was approved, but the feature could not enter development: " + featureError.message }, { status: 500 });
   }
 
-  // A human approval or merge is a durable automation wake-up, not a cue to
-  // wait for the next browser polling interval before planning the next useful
-  // improvement from the updated repository state.
-  if (parsed.data.approve || parsed.data.rejectProposal || parsed.data.mergeHumanApproval) {
+  // Every transition that places a task back in `approved` must wake delivery.
+  // Otherwise Retry task can leave a valid task stranded in the queue until a
+  // human manually runs an automation cycle.
+  const requeuedForExecution = (parsed.data.resetExecution && task.state === "failed") || parsed.data.rejectHumanApproval;
+  if (parsed.data.approve || parsed.data.rejectProposal || parsed.data.mergeHumanApproval || requeuedForExecution) {
     after(async () => {
       const { data: project } = await supabase.from("projects").select("automation_state").eq("id", projectId).maybeSingle();
       if (project?.automation_state !== "running") return;
       try {
         const results = await runAutomationCycle({ supabase, projectId, owner: "task-approved-" + taskId + "-" + user.id });
-        await supabase.from("events").insert({ project_id: projectId, actor_type: "system", event_type: "automation_woken_by_human_decision", payload: { task_id: taskId, decision: parsed.data.mergeHumanApproval ? "merged" : parsed.data.rejectProposal ? "proposal_rejected" : "approved", message: "Human decision immediately woke automation to inspect and plan the next improvement.", results } });
+        const decision = parsed.data.mergeHumanApproval ? "merged"
+          : parsed.data.rejectProposal ? "proposal_rejected"
+            : requeuedForExecution ? "requeued"
+              : "approved";
+        await supabase.from("events").insert({ project_id: projectId, actor_type: "system", event_type: "automation_woken_by_human_decision", payload: { task_id: taskId, decision, message: requeuedForExecution ? "Task returned to the approved queue; automation immediately woke delivery." : "Human decision immediately woke automation to inspect and plan the next improvement.", results } });
       } catch (wakeError) {
         await supabase.from("events").insert({ project_id: projectId, actor_type: "system", event_type: "automation_wake_failed", payload: { task_id: taskId, reason: wakeError instanceof Error ? wakeError.message : "Automation wake-up failed." } });
       }

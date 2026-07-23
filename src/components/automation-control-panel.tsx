@@ -40,9 +40,16 @@ export function AutomationControlPanel({ projectId }: { projectId: string }) {
   return <section className="synthesis-panel automation-control-panel">
     <div className="synthesis-heading"><div><p className="eyebrow">AUTOMATION CONTROL</p><h2>{projectCompleted ? "Project completed" : frozen ? "Automation frozen" : "Automation continuing"}</h2><p className="panel-copy">{projectCompleted ? "Resume the project from its dashboard before planning or execution can continue." : "Planning and delivery are independent sequential lanes."}</p></div><div className="automation-actions"><button className="button secondary" onClick={cycle} disabled={!snapshot || pending || cycling || frozen || projectCompleted}>{cycling ? "Claiming…" : "Run automation cycle"}</button><button className="button secondary" onClick={toggle} disabled={!snapshot || pending}>{pending ? "Updating…" : frozen ? "Continue automation" : "Freeze automation"}</button></div></div>
     <div className="automation-lanes"><LaneCard title="Planning lane" lane={snapshot?.lanes.planning} /><LaneCard title="Delivery lane" lane={snapshot?.lanes.delivery} /></div>
-    {snapshot && <p className="automation-next">Automatic executions today: {snapshot.runsToday} / {snapshot.dailyRunLimit}</p>}
+    {snapshot && snapshot.runsToday >= snapshot.dailyRunLimit && (
+      <p className="form-error font-semibold">API rate limit reached ({snapshot.runsToday} / {snapshot.dailyRunLimit} daily runs used).</p>
+    )}
+    {snapshot && snapshot.runsToday < snapshot.dailyRunLimit && (
+      <p className="automation-next">Automatic executions today: {snapshot.runsToday} / {snapshot.dailyRunLimit}</p>
+    )}
     {snapshot?.lastActionAt && <p className="automation-next">Last control change: {new Date(snapshot.lastActionAt).toLocaleString()}</p>}
-    {snapshot?.cooldownUntil && <p className="form-error">Provider cooldown until {new Date(snapshot.cooldownUntil).toLocaleTimeString()}. No new automation work will start before then.</p>}
+    {snapshot?.cooldownUntil && new Date(snapshot.cooldownUntil).getTime() > Date.now() && (
+      <p className="form-error font-semibold">Server is busy: Provider minute limit reached (cooldown active until {new Date(snapshot.cooldownUntil).toLocaleTimeString()}).</p>
+    )}
     {snapshot?.events?.length ? <ol className="automation-timeline">{snapshot.events.map((event) => <li key={event.id}><strong>{timelineTitle(event)}</strong><span>{timelineDetail(event)}</span><small>{new Date(event.created_at).toLocaleString()}</small></li>)}</ol> : <p className="queue-empty">No automation decisions have been recorded yet.</p>}
     {error && <p className="form-error">{error}</p>}
   </section>;

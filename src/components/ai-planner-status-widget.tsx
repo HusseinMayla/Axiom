@@ -161,9 +161,9 @@ export function AiPlannerStatusWidget({
     planningStatusClass = "status-frozen";
     planningDetail = snapshot?.pauseReason ?? "Automation paused by human";
   } else if (coolingDown) {
-    planningStatusLabel = "Cooling Down";
+    planningStatusLabel = "Server is busy";
     planningStatusClass = "status-cooldown";
-    planningDetail = "Provider rate limit cooldown active";
+    planningDetail = "Server is busy: Rate limit per minute reached";
   } else if (isPlanning) {
     planningStatusLabel = "Planning Work";
     planningStatusClass = "status-active";
@@ -173,6 +173,9 @@ export function AiPlannerStatusWidget({
     if (snapshot.lanes.planning.reason.includes("already being claimed")) {
       planningStatusLabel = "Checking Scope";
       planningStatusClass = "status-active";
+    } else if (snapshot.lanes.planning.reason.includes("Rate limit per minute") || snapshot.lanes.planning.reason.includes("cooling down")) {
+      planningStatusLabel = "Server is busy";
+      planningStatusClass = "status-cooldown";
     }
   }
 
@@ -193,6 +196,10 @@ export function AiPlannerStatusWidget({
     deliveryStatusLabel = "Frozen";
     deliveryStatusClass = "status-frozen";
     deliveryDetail = "Delivery lane paused";
+  } else if (coolingDown) {
+    deliveryStatusLabel = "Server is busy";
+    deliveryStatusClass = "status-cooldown";
+    deliveryDetail = "Server is busy: Provider minute limit active";
   } else if (isExecuting) {
     deliveryStatusLabel = "Executing Task";
     deliveryStatusClass = "status-executing";
@@ -203,7 +210,10 @@ export function AiPlannerStatusWidget({
     deliveryDetail = "AI Reviewer evaluating task outputs...";
   } else if (snapshot?.lanes.delivery.reason) {
     deliveryDetail = snapshot.lanes.delivery.reason;
-    if (deliveryDetail.includes("waiting for bot or human review")) {
+    if (deliveryDetail.includes("daily cap") || deliveryDetail.includes("API rate limit reached") || deliveryDetail.includes("Daily limit")) {
+      deliveryStatusLabel = "API rate limit reached";
+      deliveryStatusClass = "status-frozen";
+    } else if (deliveryDetail.includes("waiting for bot or human review")) {
       deliveryStatusLabel = "Waiting Approval";
       deliveryStatusClass = "status-waiting";
     } else if (deliveryDetail.includes("approved task is eligible")) {
