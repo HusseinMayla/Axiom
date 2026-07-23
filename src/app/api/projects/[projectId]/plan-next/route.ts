@@ -4,7 +4,6 @@ import { proposeTask } from "@/lib/ai/task-planning";
 import { normalizeHumanPrerequisites, serializeHumanPrerequisites } from "@/lib/human-prerequisites";
 import { scanRepository, type AvailableRepository } from "@/lib/github/app";
 import { planningScopeBlocker } from "@/lib/automation-eligibility";
-import { requestFeatureClarificationAfterNoWork } from "@/lib/feature-status";
 
 const ACTIVE_TASK_STATES = ["planned", "queued", "running", "pending_review", "waiting_for_approval", "waiting_for_human_approval", "approved"];
 const requestSchema = z.object({
@@ -43,7 +42,7 @@ export async function POST(
     .eq("id", projectId)
     .single();
   if (!project) return Response.json({ error: "Project not found." }, { status: 404 });
-  if (project.state !== "active") return Response.json({ error: "Approve project context before planning begins." }, { status: 409 });
+  if (project.state !== "active") return Response.json({ error: project.state === "completed" ? "Resume the completed project before planning more work." : "Approve project context before planning begins." }, { status: 409 });
   if (project.spent_estimate_cents >= project.budget_cap_cents) return Response.json({ error: "This project has reached its AI budget cap." }, { status: 409 });
 
   const [{ data: features }, { data: activeTasks }, { data: openQuestions }, { data: rootNode }, { data: repositoryMap }, { data: outcomes }] = await Promise.all([
@@ -163,23 +162,6 @@ export async function POST(
       }
       await supabase.from("events").insert({ project_id: projectId, actor_type: "ai", event_type: "planning_clarification", payload: { trigger, category: target.category, question: result.question.question, rationale: result.question.rationale } });
       return Response.json({ type: "clarification", featureId: target.category === "feature" ? feature!.id : null });
-    }
-
-    if (result.type === "no_work") {
-      if (target.category === "feature") {
-        const clarification = await requestFeatureClarificationAfterNoWork({
-          supabase,
-          projectId,
-          featureId: feature!.id,
-          featureName: feature!.name,
-          contextNodeId: feature!.context_node_id,
-          reason: result.reason,
-        });
-        await supabase.from("events").insert({ project_id: projectId, actor_type: "ai", event_type: "planning_clarification", payload: { trigger, category: "feature", feature_id: feature!.id, question: clarification.question, rationale: clarification.rationale, planner_no_work_reason: result.reason } });
-        return Response.json({ type: "clarification", featureId: feature!.id, message: "The planner could not prove this feature is complete, so it needs your clarification." });
-      }
-      await supabase.from("events").insert({ project_id: projectId, actor_type: "ai", event_type: "planning_no_work", payload: { trigger, category: target.category, reason: result.reason } });
-      return Response.json({ type: "no_work", message: result.reason });
     }
 
     const task = result.task;

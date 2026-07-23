@@ -25,7 +25,7 @@ export default async function ProjectDashboardPage({
 
   if (!project) notFound();
 
-  if (project.repository_state === "empty" && project.state !== "active") {
+  if (project.repository_state === "empty" && project.state !== "active" && project.state !== "completed") {
     redirect("/projects/" + projectId + "/setup");
   }
 
@@ -53,7 +53,7 @@ export default async function ProjectDashboardPage({
           </div>
           <span className="workspace-state">● Human control active</span>
         </div>
-        {project.state === "active" && <DashboardActionCenter projectId={project.id} automationState={project.automation_state as "running" | "frozen" | null} planningFeatures={(features ?? []).filter((feature) => feature.status === "active" || feature.status === "in_development").map((feature) => ({ id: feature.id, name: feature.name }))} featureSnapshots={featureSnapshots} humanTodos={(humanTodos ?? []).map((todo) => ({ id: todo.id, title: todo.title, rationale: todo.rationale, suggestedAction: todo.suggested_action, humanComment: todo.human_comment }))} tasks={(tasks ?? []).filter((task) => !task.archived_at).map((task) => ({ id: task.id, state: task.state, objective: task.objective, humanSummary: task.human_summary, featureName: (task.features as { name?: string } | null)?.name ?? "Project work", branchName: task.branch_name, headSha: task.head_sha, developerReport: developerReportFromUnknown(task.developer_report), reviewFeedback: task.review_feedback, executionStartedAt: task.execution_started_at, executionLogs: executionLogsFromUnknown(task.execution_logs), humanActions: normalizeHumanPrerequisites(task.human_actions) }))} clarifications={questions ?? []} />}
+        {(project.state === "active" || project.state === "completed") && <DashboardActionCenter projectId={project.id} projectState={project.state as "active" | "completed"} automationState={project.automation_state as "running" | "frozen" | null} planningFeatures={(features ?? []).filter((feature) => feature.status === "active" || feature.status === "in_development").map((feature) => ({ id: feature.id, name: feature.name }))} featureSnapshots={featureSnapshots} humanTodos={(humanTodos ?? []).map((todo) => ({ id: todo.id, title: todo.title, rationale: todo.rationale, suggestedAction: todo.suggested_action, humanComment: todo.human_comment }))} tasks={(tasks ?? []).filter((task) => !task.archived_at).map((task) => ({ id: task.id, state: task.state, objective: task.objective, humanSummary: task.human_summary, featureName: (task.features as { name?: string } | null)?.name ?? "Project work", branchName: task.branch_name, headSha: task.head_sha, developerReport: developerReportFromUnknown(task.developer_report), reviewFeedback: task.review_feedback, executionStartedAt: task.execution_started_at, executionLogs: executionLogsFromUnknown(task.execution_logs), humanActions: normalizeHumanPrerequisites(task.human_actions) }))} clarifications={questions ?? []} />}
       </main>
     </div>
   );

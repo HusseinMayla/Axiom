@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 type AutomationSnapshotResponse = {
   state: "running" | "frozen";
+  projectState?: string;
   pauseReason: string | null;
   cooldownUntil: string | null;
   lastActionAt: string | null;
@@ -29,7 +30,7 @@ type AutomationSnapshotResponse = {
 
 type ResultOutcome = {
   id: string;
-  type: "proposed_task" | "question" | "no_work" | "validated_work";
+  type: "proposed_task" | "question" | "validated_work";
   title: string;
   detail: string;
   timestamp: string;
@@ -86,15 +87,6 @@ export function AiPlannerStatusWidget({
                 detail: String(payload.question ?? "Planner asked a clarifying question."),
                 timestamp: ev.created_at,
               };
-            } else if (ev.event_type === "planning_no_work") {
-              outcome = {
-                id: ev.id,
-                type: "no_work",
-                title: "No Task Needed",
-                detail: String(payload.reason ?? "Current project scope requires no new tasks."),
-                timestamp: ev.created_at,
-                expiresAt: new Date(ev.created_at).getTime() + 15_000,
-              };
             } else if (ev.event_type === "automation_evaluated") {
               outcome = {
                 id: ev.id,
@@ -129,6 +121,7 @@ export function AiPlannerStatusWidget({
 
   const state = snapshot?.state ?? initialState ?? "running";
   const isFrozen = state === "frozen";
+  const projectCompleted = snapshot?.projectState === "completed";
   const coolingDown = Boolean(snapshot?.cooldownUntil && new Date(snapshot.cooldownUntil).getTime() > Date.now());
 
   // Determine Planning Activity
@@ -139,7 +132,11 @@ export function AiPlannerStatusWidget({
   let planningStatusClass = "status-idle";
   let planningDetail = "Awaiting next cycle or trigger";
 
-  if (isFrozen) {
+  if (projectCompleted) {
+    planningStatusLabel = "Project Complete";
+    planningStatusClass = "status-frozen";
+    planningDetail = "A human marked this project complete. Resume it to plan more work.";
+  } else if (isFrozen) {
     planningStatusLabel = "Frozen";
     planningStatusClass = "status-frozen";
     planningDetail = snapshot?.pauseReason ?? "Automation paused by human";
@@ -168,7 +165,11 @@ export function AiPlannerStatusWidget({
   let deliveryStatusClass = "status-idle";
   let deliveryDetail = "No delivery task active";
 
-  if (isFrozen) {
+  if (projectCompleted) {
+    deliveryStatusLabel = "Project Complete";
+    deliveryStatusClass = "status-frozen";
+    deliveryDetail = "Task execution is disabled until the project is resumed.";
+  } else if (isFrozen) {
     deliveryStatusLabel = "Frozen";
     deliveryStatusClass = "status-frozen";
     deliveryDetail = "Delivery lane paused";
@@ -198,8 +199,8 @@ export function AiPlannerStatusWidget({
           <span className="planner-icon">🤖</span>
           <span>AI ENGINE STATUS</span>
         </div>
-        <span className={`planner-state-badge ${isFrozen ? "frozen" : coolingDown ? "cooldown" : "running"}`}>
-          {isFrozen ? "FROZEN" : coolingDown ? "COOLDOWN" : "ACTIVE"}
+        <span className={`planner-state-badge ${projectCompleted || isFrozen ? "frozen" : coolingDown ? "cooldown" : "running"}`}>
+          {projectCompleted ? "COMPLETE" : isFrozen ? "FROZEN" : coolingDown ? "COOLDOWN" : "ACTIVE"}
         </span>
       </div>
 

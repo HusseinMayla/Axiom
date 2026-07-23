@@ -1813,9 +1813,6 @@ h2 { font-size: 1.4rem; }
 .outcome-card.outcome-question {
   border-left-color: #f59e0b;
 }
-.outcome-card.outcome-no_work {
-  border-left-color: #3b82f6;
-}
 .outcome-card.outcome-validated_work {
   border-left-color: #a855f7;
 }
@@ -1847,4 +1844,3 @@ h2 { font-size: 1.4rem; }
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-

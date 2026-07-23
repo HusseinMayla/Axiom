@@ -41,7 +41,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
     .eq("id", projectId)
     .single();
   if (!project) return Response.json({ error: "Project not found." }, { status: 404 });
-  if (project.state !== "active") return Response.json({ error: "Approve project context before running a task." }, { status: 409 });
+  if (project.state !== "active") return Response.json({ error: project.state === "completed" ? "Resume the completed project before running a task." : "Approve project context before running a task." }, { status: 409 });
   if (trigger === "human" && project.automation_state !== "frozen") {
     return Response.json({ error: "Freeze automatic flow before starting a task manually." }, { status: 409 });
   }

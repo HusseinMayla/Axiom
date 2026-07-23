@@ -8,7 +8,6 @@ import { executeNextTask } from "@/app/api/projects/[projectId]/execute-next/rou
 import { isGeminiRateLimitError } from "@/lib/ai/gemini";
 import { cancelActiveRun } from "@/lib/execution/active-run";
 import { isPlanningScopeEligible, planningScopeBlocker } from "@/lib/automation-eligibility";
-import { requestFeatureClarificationAfterNoWork } from "@/lib/feature-status";
 
 type Supabase = SupabaseClient;
 const LEASE_TTL_MS = 2 * 60_000;
@@ -46,10 +45,11 @@ export async function runAutomationCycle({ supabase, projectId, owner = "automat
   // Failed and terminal tasks are historical outcomes, not active work. They must
   // not prevent the planner from proposing the next task for their scope.
   const planningTasks = openTasks.filter((task) => PLANNING_OCCUPYING_STATES.has(task.state));
-  return Promise.all([
+  const [deliveryResult, planningResults] = await Promise.all([
     runDeliveryLane(supabase, projectId, cycleOwner, openTasks, { runsToday, dailyRunLimit }),
     runPlanningLane(supabase, projectId, cycleOwner, planningTasks, features ?? [], questions ?? []),
   ]);
+  return [deliveryResult, ...planningResults];
 }
 
 async function runDeliveryLane(supabase: Supabase, projectId: string, owner: string, openTasks: Array<{ id: string; state: string; objective: string }>, executionBudget: { runsToday: number; dailyRunLimit: number }): Promise<CycleResult> {
@@ -73,31 +73,38 @@ async function runDeliveryLane(supabase: Supabase, projectId: string, owner: str
   return idle("No completed branch or approved task is eligible for delivery.", { non_terminal_task_states: taskDetails(openTasks.filter((task) => !TERMINAL_TASK_STATES.has(task.state))) });
 }
 
-async function runPlanningLane(supabase: Supabase, projectId: string, owner: string, openTasks: Array<{ id: string; category: string; feature_id: string | null; state: string; objective: string }>, features: Array<{ id: string }>, questions: Array<{ feature_id: string | null }>): Promise<CycleResult> {
+async function runPlanningLane(supabase: Supabase, projectId: string, owner: string, openTasks: Array<{ id: string; category: string; feature_id: string | null; state: string; objective: string }>, features: Array<{ id: string }>, questions: Array<{ feature_id: string | null }>): Promise<CycleResult[]> {
   const generalBlocker = planningScopeBlocker({ category: "general" }, openTasks, questions);
   const generalBlockers = openTasks.filter((task) => task.category === "general");
-  let generalNoWork: CycleResult | null = null;
+  const results: CycleResult[] = [];
   if (!generalBlocker) {
     if (await claim(supabase, projectId, "planning", null, "propose", owner)) {
       const generalResult = await plan(supabase, projectId, owner, null, "Claimed a general-task proposal check.");
-      if (generalResult.details?.outcome !== "no_work") return generalResult;
-      generalNoWork = generalResult;
+      results.push(generalResult);
+      if (generalResult.details?.outcome === "rate_limited") return results;
     } else {
-      return idle("General-task planning is already being claimed by another automation cycle.", { required_action: "propose", scope: "general", lease: await leaseDetails(supabase, projectId, "planning") });
+      return [idle("General-task planning is already being claimed by another automation cycle.", { required_action: "propose", scope: "general", lease: await leaseDetails(supabase, projectId, "planning") })];
     }
   }
   const blockedFeatures = new Set(questions.flatMap((question) => question.feature_id ? [question.feature_id] : []));
-  const feature = features.find((candidate) => isPlanningScopeEligible({ category: "feature", featureId: candidate.id }, openTasks, questions));
-  if (feature && await claim(supabase, projectId, "planning", null, "propose", owner)) return plan(supabase, projectId, owner, feature.id, "Claimed a feature-task proposal check.");
-  if (feature) return idle("Feature planning is already being claimed by another automation cycle.", { required_action: "propose", scope: "feature", feature_id: feature.id, lease: await leaseDetails(supabase, projectId, "planning") });
-  if (generalNoWork) return generalNoWork;
-  return idle("No eligible general or feature scope needs planning.", {
+  const eligibleFeatures = features.filter((feature) => isPlanningScopeEligible({ category: "feature", featureId: feature.id }, openTasks, questions));
+  for (const feature of eligibleFeatures) {
+    if (!await claim(supabase, projectId, "planning", null, "propose", owner)) {
+      results.push(idle("Feature planning is already being claimed by another automation cycle.", { required_action: "propose", scope: "feature", feature_id: feature.id, lease: await leaseDetails(supabase, projectId, "planning") }));
+      break;
+    }
+    const featureResult = await plan(supabase, projectId, owner, feature.id, "Claimed a feature-task proposal check.");
+    results.push(featureResult);
+    if (featureResult.details?.outcome === "rate_limited") break;
+  }
+  if (results.length) return results;
+  return [idle("No eligible general or feature scope needs planning.", {
     blocking_general_tasks: taskDetails(generalBlockers),
     general_scope_blocker: generalBlocker,
     blocking_feature_tasks: taskDetails(openTasks.filter((task) => task.feature_id !== null)),
     feature_ids_with_open_clarifications: [...blockedFeatures],
     active_feature_ids: features.map((feature) => feature.id),
-  });
+  })];
 }
 
 async function evaluate(supabase: Supabase, projectId: string, taskId: string, owner: string): Promise<CycleResult> {
@@ -208,45 +215,6 @@ async function plan(supabase: Supabase, projectId: string, owner: string, featur
       }),
     });
     await assertLeaseOwned(supabase, projectId, "planning", owner);
-    if (proposal.type === "no_work") {
-      const fallback = correctiveFoundationProposal(proposal.reason, target.category);
-      if (fallback) {
-        const { data: created, error } = await supabase.from("tasks").insert({
-          project_id: projectId,
-          feature_id: featureId,
-          category: "general",
-          priority: 0,
-          state: "waiting_for_approval",
-          objective: fallback.objective,
-          rationale: fallback.rationale,
-          human_summary: fallback.humanSummary,
-          developer_prompt: fallback.developerPrompt,
-          allowed_paths: fallback.allowedPaths,
-          implementation_steps: fallback.implementationSteps,
-          acceptance_criteria: fallback.acceptanceCriteria,
-          validation_commands: fallback.validationCommands,
-          human_actions: [],
-          planning_context: { source: "deterministic_foundation_repair", planner_reason: proposal.reason, fresh_repository_tree_paths: scan.tree.length },
-        }).select("id").single();
-        if (error || !created) throw new Error(error?.message ?? "Could not save foundation repair proposal.");
-        await event(supabase, projectId, "task_proposed", { task_id: created.id, source: "deterministic_foundation_repair", category: "general", reason: proposal.reason });
-        return result("planning", "propose", created.id, null, "Created a corrective React/Vite/Tailwind foundation proposal after the planner identified repository drift.");
-      }
-      if (feature) {
-        const clarification = await requestFeatureClarificationAfterNoWork({
-          supabase,
-          projectId,
-          featureId: feature.id,
-          featureName: feature.name,
-          contextNodeId: feature.context_node_id,
-          reason: proposal.reason,
-        });
-        await event(supabase, projectId, "planning_clarification", { feature_id: featureId, question: clarification.question, rationale: clarification.rationale, planner_no_work_reason: proposal.reason });
-        return result("planning", "propose", null, featureId, "Planner could not prove the feature is complete and needs clarification.", { outcome: "clarification" });
-      }
-      await event(supabase, projectId, "planning_no_work", { feature_id: featureId, reason: proposal.reason });
-      return result("planning", "propose", null, featureId, proposal.reason, { outcome: "no_work" });
-    }
     if (proposal.type === "clarification") {
       await supabase.from("clarification_questions").insert({ project_id: projectId, feature_id: featureId, question: proposal.question.question, rationale: proposal.question.rationale });
       if (featureId && feature?.status !== "in_development") await supabase.from("features").update({ status: "needs_clarification", updated_at: new Date().toISOString() }).eq("id", featureId);
@@ -262,7 +230,7 @@ async function plan(supabase: Supabase, projectId: string, owner: string, featur
   } catch (error) {
     if (isGeminiRateLimitError(error)) {
       await cooldown(supabase, projectId, "Task planning remained rate-limited after retrying for 100 seconds.");
-      return result("planning", "propose", null, featureId, "Task planning is rate-limited; automation is cooling down.");
+      return result("planning", "propose", null, featureId, "Task planning is rate-limited; automation is cooling down.", { outcome: "rate_limited" });
     }
     throw error;
   } finally { await release(supabase, projectId, "planning", owner); }
@@ -271,20 +239,6 @@ async function plan(supabase: Supabase, projectId: string, owner: string, featur
 async function event(supabase: Supabase, projectId: string, event_type: string, payload: Record<string, unknown>) { await supabase.from("events").insert({ project_id: projectId, actor_type: "ai", event_type, payload }); }
 function repositoryFromSettings(settings: unknown): AvailableRepository | null { const g = (settings as { github?: unknown } | null)?.github as Record<string, unknown> | undefined; return g && typeof g.repository_id === "number" && typeof g.installation_id === "number" && typeof g.owner === "string" && typeof g.name === "string" && typeof g.full_name === "string" && typeof g.default_branch === "string" && typeof g.private === "boolean" ? { id: g.repository_id, installationId: g.installation_id, owner: g.owner, name: g.name, fullName: g.full_name, defaultBranch: g.default_branch, private: g.private, htmlUrl: "" } : null; }
 function engineerModelFromSettings(settings: unknown) { const model = (settings as { engineer?: { model?: unknown } } | null)?.engineer?.model; return model === "gemini-3.1-flash-lite" || model === "gemini-3.5-flash" ? model : undefined; }
-
-function correctiveFoundationProposal(reason: string, category: "general" | "feature") {
-  if (category !== "general" || !/(corrective task is needed|corrective|re-?scaffold|vanilla typescript|boilerplate|react-based application|react\/vite\/tailwind foundation)/i.test(reason)) return null;
-  return {
-    objective: "Replace the vanilla TypeScript starter with the approved React, Vite, and Tailwind foundation",
-    rationale: "Repository evidence shows the current starter files conflict with the approved application foundation. " + reason,
-    humanSummary: "Restore the approved React/Vite/Tailwind foundation so future feature work starts from the correct application structure.",
-    developerPrompt: "Replace the current vanilla Vite TypeScript starter with the approved React + TypeScript + Vite + Tailwind application foundation. Remove obsolete vanilla starter files such as src/main.ts and src/counter.ts when they are no longer used. Create a minimal React entry point and app shell, configure Tailwind according to the installed version, preserve existing project metadata that is still valid, and do not add product features in this task. Keep the change limited to foundation and configuration files.",
-    allowedPaths: ["package.json", "package-lock.json", "vite.config.ts", "tsconfig.json", "index.html", "src", "public"],
-    implementationSteps: ["Inspect the existing Vite configuration and package scripts.", "Replace the vanilla TypeScript entry point with a React TypeScript entry point and minimal app shell.", "Configure Tailwind and remove obsolete vanilla starter files.", "Run the project build to verify the foundation."],
-    acceptanceCriteria: ["The application uses a React TypeScript entry point instead of the vanilla TypeScript starter.", "The obsolete vanilla counter starter is removed or no longer referenced.", "Tailwind is configured and usable by the app shell.", "npm run build completes successfully."],
-    validationCommands: ["npm run build"],
-  };
-}
 
 async function claim(supabase: Supabase, projectId: string, lane: "planning" | "delivery", taskId: string | null, action: "propose" | "execute" | "evaluate", owner: string) {
   const { data, error } = await supabase.rpc("claim_automation_lease", { p_project_id: projectId, p_lane: lane, p_task_id: taskId, p_action: action, p_owner: owner, p_expires_at: new Date(Date.now() + LEASE_TTL_MS).toISOString() });

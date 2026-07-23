@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 type TimelineEvent = { id: string; event_type: string; payload: Record<string, unknown>; created_at: string };
 type Lane = { activeLease: { action: string; taskId: string | null; expiresAt: string } | null; nextAction: string; reason: string };
-type Snapshot = { state: "running" | "frozen"; pauseReason: string | null; cooldownUntil: string | null; lastActionAt: string | null; dailyRunLimit: number; runsToday: number; lanes: { planning: Lane; delivery: Lane }; events: TimelineEvent[] };
+type Snapshot = { state: "running" | "frozen"; projectState?: string; pauseReason: string | null; cooldownUntil: string | null; lastActionAt: string | null; dailyRunLimit: number; runsToday: number; lanes: { planning: Lane; delivery: Lane }; events: TimelineEvent[] };
 
 export function AutomationControlPanel({ projectId }: { projectId: string }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -36,8 +36,9 @@ export function AutomationControlPanel({ projectId }: { projectId: string }) {
     await load(); setCycling(false);
   };
   const frozen = snapshot?.state === "frozen";
+  const projectCompleted = snapshot?.projectState === "completed";
   return <section className="synthesis-panel automation-control-panel">
-    <div className="synthesis-heading"><div><p className="eyebrow">AUTOMATION CONTROL</p><h2>{frozen ? "Automation frozen" : "Automation continuing"}</h2><p className="panel-copy">Planning and delivery are independent sequential lanes.</p></div><div className="automation-actions"><button className="button secondary" onClick={cycle} disabled={!snapshot || pending || cycling || frozen}>{cycling ? "Claiming…" : "Run automation cycle"}</button><button className="button secondary" onClick={toggle} disabled={!snapshot || pending}>{pending ? "Updating…" : frozen ? "Continue automation" : "Freeze automation"}</button></div></div>
+    <div className="synthesis-heading"><div><p className="eyebrow">AUTOMATION CONTROL</p><h2>{projectCompleted ? "Project completed" : frozen ? "Automation frozen" : "Automation continuing"}</h2><p className="panel-copy">{projectCompleted ? "Resume the project from its dashboard before planning or execution can continue." : "Planning and delivery are independent sequential lanes."}</p></div><div className="automation-actions"><button className="button secondary" onClick={cycle} disabled={!snapshot || pending || cycling || frozen || projectCompleted}>{cycling ? "Claiming…" : "Run automation cycle"}</button><button className="button secondary" onClick={toggle} disabled={!snapshot || pending}>{pending ? "Updating…" : frozen ? "Continue automation" : "Freeze automation"}</button></div></div>
     <div className="automation-lanes"><LaneCard title="Planning lane" lane={snapshot?.lanes.planning} /><LaneCard title="Delivery lane" lane={snapshot?.lanes.delivery} /></div>
     {snapshot && <p className="automation-next">Automatic executions today: {snapshot.runsToday} / {snapshot.dailyRunLimit}</p>}
     {snapshot?.lastActionAt && <p className="automation-next">Last control change: {new Date(snapshot.lastActionAt).toLocaleString()}</p>}
@@ -54,7 +55,6 @@ function LaneCard({ title, lane }: { title: string; lane: Lane | undefined }) {
 function timelineTitle(event: TimelineEvent) {
   if (event.event_type === "planning_triggered") return "Planner check triggered";
   if (event.event_type === "planning_clarification") return "Planner asked a clarification";
-  if (event.event_type === "planning_no_work") return "Planner decided no task is needed";
   if (event.event_type === "task_proposed") return "Planner proposed a task";
   if (event.event_type === "automation_execution_started") return "Delivery started task execution";
   if (event.event_type === "automation_evaluation_started") return "Delivery started bot evaluation";

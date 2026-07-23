@@ -121,6 +121,7 @@ export function HarnessTopologyFusion({
   const [activeAnimations, setActiveAnimations] = useState<ActivePacketAnimation[]>([]);
   const processedEventIds = useRef<Set<string>>(new Set());
   const pktCounter = useRef<number>(100);
+  const isFirstPoll = useRef<boolean>(true);
 
   // Synchronized FIFO Animation Queue Engine
   const animationQueue = useRef<QueuedItem[]>([]);
@@ -240,6 +241,10 @@ export function HarnessTopologyFusion({
       setAgentStatuses((prev) => ({ ...prev, developer: "working", validator: "working" }));
     } else if (item.pathKey === "validatorToEngineer") {
       setAgentStatuses((prev) => ({ ...prev, validator: "active", engineer: "active" }));
+    } else if (item.pathKey === "engineerToContext") {
+      setAgentStatuses((prev) => ({ ...prev, context: "working", engineer: "active" }));
+    } else if (item.pathKey === "engineerToHuman") {
+      setAgentStatuses((prev) => ({ ...prev, engineer: "active", human: "waiting" }));
     }
 
     // Reset active animations for a 50ms tick to force DOM unmount/remount
@@ -247,7 +252,7 @@ export function HarnessTopologyFusion({
 
     setTimeout(() => {
       setActiveAnimations([animObject]);
-      setPacketLogs((prev) => [item.packet, ...prev.slice(0, 15)]);
+      setPacketLogs((prev) => [item.packet, ...prev.filter((p) => p.id !== item.packet.id).slice(0, 25)]);
       setSelectedPacket(item.packet);
 
       // Schedule cleanup & play next queued item
@@ -284,52 +289,109 @@ export function HarnessTopologyFusion({
         if (!isMounted) return;
 
         const itemsToSpawn: QueuedItem[] = [];
+        const initialLogs: PacketLog[] = [];
+        const isFirst = isFirstPoll.current;
 
         if (autoRes.ok) {
           const autoData = await autoRes.json();
           const events = (autoData.events as { id: string; event_type: string; payload: unknown; created_at: string }[]) ?? [];
 
           for (const ev of events) {
+            const timeDiffMs = Date.now() - new Date(ev.created_at).getTime();
+            const isRecent = timeDiffMs < 30000;
+
             if (!processedEventIds.current.has(ev.id)) {
               processedEventIds.current.add(ev.id);
               const timeStr = new Date(ev.created_at).toISOString().split("T")[1].slice(0, 12);
 
+              let pathKey = "humanToEngineer";
+              let color = "#38bdf8";
+              let protocol: "HTTP/2" | "TCP" | "UDP" | "IPC" = "HTTP/2";
+              let src = "Human_UI (10.0.0.1:443)";
+              let dst = "Engineer_AI (10.0.0.2:8080)";
+              let typeStr = "TASK_PROPOSAL";
+
               if (ev.event_type === "task_proposed") {
-                const pkt: PacketLog = {
-                  id: makeUniquePktId("pkt-prop"),
+                pathKey = "humanToEngineer";
+                color = "#38bdf8";
+                protocol = "HTTP/2";
+                typeStr = "TASK_PROPOSAL";
+                src = "Human_UI (10.0.0.1:443)";
+                dst = "Engineer_AI (10.0.0.2:8080)";
+              } else if (ev.event_type === "planning_clarification" || ev.event_type === "human_todo_created") {
+                pathKey = "engineerToHuman";
+                color = "#fbbf24";
+                protocol = "HTTP/2";
+                typeStr = "CLARIFICATION_GATE";
+                src = "Engineer_AI (10.0.0.2:8080)";
+                dst = "Human_UI (10.0.0.1:443)";
+              } else if (["context_updated", "context_approved", "repository_scanned", "synthesize_completed"].includes(ev.event_type)) {
+                pathKey = "engineerToContext";
+                color = "#00ffcc";
+                protocol = "IPC";
+                typeStr = "CONTEXT_UPDATE";
+                src = "Engineer_AI (10.0.0.2:8080)";
+                dst = "Context_Engine (10.0.0.3:50051)";
+              } else if (ev.event_type === "planning_triggered") {
+                pathKey = "contextToEngineer";
+                color = "#00ffcc";
+                protocol = "IPC";
+                typeStr = "CONTEXT_LOAD";
+                src = "Context_Engine (10.0.0.3:50051)";
+                dst = "Engineer_AI (10.0.0.2:8080)";
+              } else if (ev.event_type === "automation_execution_started") {
+                pathKey = "engineerToDocker";
+                color = "#34d399";
+                protocol = "TCP";
+                typeStr = "DISPATCH_EXECUTION";
+                src = "Engineer_AI (10.0.0.2:8080)";
+                dst = "Developer_Worker (172.17.0.2:9000)";
+              } else if (ev.event_type === "task_completed" || ev.event_type === "task_approved") {
+                const pktAck: PacketLog = {
+                  id: makeUniquePktId("pkt-ack"),
                   timestamp: timeStr,
-                  source: "Human_UI (10.0.0.1:443)",
+                  source: "Validate_Checker (172.17.0.3:9001)",
                   destination: "Engineer_AI (10.0.0.2:8080)",
-                  protocol: "HTTP/2",
-                  type: "TASK_PROPOSAL",
+                  protocol: "TCP",
+                  type: "VERIFICATION_SUCCESS",
                   status: "OK",
                   payload: JSON.stringify(ev.payload, null, 2),
                 };
-                itemsToSpawn.push({ packet: pkt, pathKey: "humanToEngineer", color: "#38bdf8" });
-              } else if (ev.event_type === "planning_clarification") {
-                const pkt: PacketLog = {
-                  id: makeUniquePktId("pkt-clar"),
+                const pktReview: PacketLog = {
+                  id: makeUniquePktId("pkt-rev"),
                   timestamp: timeStr,
                   source: "Engineer_AI (10.0.0.2:8080)",
                   destination: "Human_UI (10.0.0.1:443)",
                   protocol: "HTTP/2",
-                  type: "CLARIFICATION_GATE",
+                  type: "APPROVAL_REQUIRED",
                   status: "PENDING",
                   payload: JSON.stringify(ev.payload, null, 2),
                 };
-                itemsToSpawn.push({ packet: pkt, pathKey: "engineerToHuman", color: "#fbbf24" });
-              } else if (ev.event_type === "automation_execution_started") {
-                const pkt: PacketLog = {
-                  id: makeUniquePktId("pkt-exec"),
-                  timestamp: timeStr,
-                  source: "Engineer_AI (10.0.0.2:8080)",
-                  destination: "Developer_Worker (172.17.0.2:9000)",
-                  protocol: "TCP",
-                  type: "DISPATCH_EXECUTION",
-                  status: "OK",
-                  payload: JSON.stringify(ev.payload, null, 2),
-                };
-                itemsToSpawn.push({ packet: pkt, pathKey: "engineerToDocker", color: "#34d399" });
+                initialLogs.push(pktAck, pktReview);
+                if (!isFirst || isRecent) {
+                  itemsToSpawn.push(
+                    { packet: pktAck, pathKey: "validatorToEngineer", color: "#10b981" },
+                    { packet: pktReview, pathKey: "engineerToHuman", color: "#f59e0b" }
+                  );
+                }
+                continue;
+              }
+
+              const pkt: PacketLog = {
+                id: makeUniquePktId("pkt-ev"),
+                timestamp: timeStr,
+                source: src,
+                destination: dst,
+                protocol,
+                type: typeStr,
+                status: ev.event_type === "planning_clarification" ? "PENDING" : "OK",
+                payload: JSON.stringify(ev.payload, null, 2),
+              };
+
+              initialLogs.push(pkt);
+
+              if (!isFirst || isRecent) {
+                itemsToSpawn.push({ packet: pkt, pathKey, color });
               }
             }
           }
@@ -357,11 +419,20 @@ export function HarnessTopologyFusion({
                 status: ev.status === "completed" ? "OK" : "ERROR",
                 payload: JSON.stringify({ step: ev.step, tool: ev.tool_name, args: ev.tool_args }, null, 2),
               };
+              initialLogs.push(pkt);
               itemsToSpawn.push({ packet: pkt, pathKey: "developerToValidator", color: "#00ffcc" });
               setDeveloperActivity(`${ev.tool_name.replaceAll("_", " ")} · step ${ev.step}`);
               setDeveloperProgress(Math.min(100, Math.round((ev.step / Math.max(execData.taskRun?.maxSteps ?? 1, 1)) * 100)));
             }
           }
+        }
+
+        if (initialLogs.length > 0) {
+          setPacketLogs((prev) => [...initialLogs, ...prev].slice(0, 30));
+        }
+
+        if (isFirst) {
+          isFirstPoll.current = false;
         }
 
         if (itemsToSpawn.length > 0) {

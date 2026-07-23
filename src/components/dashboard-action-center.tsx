@@ -23,13 +23,14 @@ export type FeatureSnapshot = { id: string; name: string; state: string; summary
 export type HumanTodo = { id: string; title: string; rationale: string; suggestedAction: string; humanComment: string | null };
 export type PlanningFeature = { id: string; name: string };
 
-export function DashboardActionCenter({ projectId, tasks, clarifications, featureSnapshots, humanTodos, planningFeatures, automationState }: { projectId: string; tasks: DashboardTask[]; clarifications: DashboardClarification[]; featureSnapshots: FeatureSnapshot[]; humanTodos: HumanTodo[]; planningFeatures: PlanningFeature[]; automationState: "running" | "frozen" | null }) {
+export function DashboardActionCenter({ projectId, projectState, tasks, clarifications, featureSnapshots, humanTodos, planningFeatures, automationState }: { projectId: string; projectState: "active" | "completed"; tasks: DashboardTask[]; clarifications: DashboardClarification[]; featureSnapshots: FeatureSnapshot[]; humanTodos: HumanTodo[]; planningFeatures: PlanningFeature[]; automationState: "running" | "frozen" | null }) {
   const router = useRouter();
   const [pending, setPending] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [feedback, setFeedback] = useState<Record<string, string>>({});
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [todoComments, setTodoComments] = useState<Record<string, string>>({});
+  const projectCompleted = projectState === "completed";
 
   useEffect(() => {
     const refreshWhenVisible = () => { if (document.visibilityState === "visible") router.refresh(); };
@@ -98,6 +99,17 @@ export function DashboardActionCenter({ projectId, tasks, clarifications, featur
     router.refresh();
   }
 
+  async function updateProjectState() {
+    const key = "project-state";
+    setPending(key); setMessage("");
+    const state = projectCompleted ? "active" : "completed";
+    const response = await fetch(`/api/projects/${projectId}/state`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state }) });
+    const payload = await response.json().catch(() => ({}));
+    setPending(null);
+    if (!response.ok) { setMessage(payload.error ?? "Axiom could not update the project state."); return; }
+    router.refresh();
+  }
+
   async function answer(question: DashboardClarification) {
     const answerText = answers[question.id]?.trim();
     if (!answerText) return;
@@ -121,9 +133,10 @@ export function DashboardActionCenter({ projectId, tasks, clarifications, featur
   }
 
   return <>
-    <section className="dashboard-inbox dashboard-inbox-header" aria-label="Human control status"><div className="inbox-status-grid"><SystemStatus tasks={tasks} clarifications={clarifications} /><InboxStatus label="Task proposals" count={proposals.length} empty="No bounded task proposal is waiting." tone="blue" /><InboxStatus label="Clarifications" count={clarifications.length} empty="Project context has no open question." tone="amber" /><InboxStatus label="Prerequisites" count={prerequisites.length} empty="No required action is blocking work." tone="cyan" /></div>{message ? <p className="form-note dashboard-message">{message}</p> : null}</section>
+    <section className="dashboard-inbox"><div className="dashboard-section-heading"><div><p className="eyebrow">PROJECT LIFECYCLE</p><h2>{projectCompleted ? "Project completed by you" : "Project is active"}</h2><p>{projectCompleted ? "Automation, planning, and task execution are stopped until you resume this project." : "Only you can mark this project complete. Axiom will keep checking active scopes until then."}</p></div><button className="button secondary" disabled={pending === "project-state"} onClick={updateProjectState}>{pending === "project-state" ? "Saving…" : projectCompleted ? "Resume project" : "Mark project complete"}</button></div>{message ? <p className="form-note dashboard-message">{message}</p> : null}</section>
+    {!projectCompleted && <><section className="dashboard-inbox dashboard-inbox-header" aria-label="Human control status"><div className="inbox-status-grid"><SystemStatus tasks={tasks} clarifications={clarifications} /><InboxStatus label="Task proposals" count={proposals.length} empty="No bounded task proposal is waiting." tone="blue" /><InboxStatus label="Clarifications" count={clarifications.length} empty="Project context has no open question." tone="amber" /><InboxStatus label="Prerequisites" count={prerequisites.length} empty="No required action is blocking work." tone="cyan" /></div></section>
     <section className="dashboard-control-grid"><div className="dashboard-control-left"><section className="dashboard-decision-zone"><div className="dashboard-section-heading"><div><p className="eyebrow">{primary ? "ACTION REQUIRED" : "HUMAN DECISION INBOX"}</p>{primary ? <h2>Your next decision</h2> : null}</div>{primary ? <span className="decision-count">{items.length} OPEN</span> : null}</div>{primary ? renderItem(primary, true) : <article className="decision-empty"><strong>Nothing needs a human decision right now.</strong><p>When Axiom needs a proposal approval, clarification, or prerequisite, it will appear here first.</p></article>}</section>{remaining.length > 0 ? <section className="dashboard-inbox"><div className="dashboard-section-heading"><div><p className="eyebrow">ACTION INBOX</p><h2>Other pending decisions</h2></div></div><div className="decision-inbox-list">{remaining.map((item) => renderItem(item))}</div></section> : null}<HumanWorklist projectId={projectId} todos={humanTodos} comments={todoComments} setComments={setTodoComments} pending={pending} setPending={setPending} setMessage={setMessage} /></div><ActiveTask projectId={projectId} task={activeTask} feedback={feedback} setFeedback={setFeedback} pending={pending} updateTask={updateTask} request={request} manualControlsEnabled={manualControlsEnabled} /></section>
-    <ExecutionQueue projectId={projectId} tasks={runnableTasks} features={planningFeatures} hasActiveTask={Boolean(activeTask)} manualControlsEnabled={manualControlsEnabled} pending={pending} request={request} message={message} />
+    <ExecutionQueue projectId={projectId} tasks={runnableTasks} features={planningFeatures} hasActiveTask={Boolean(activeTask)} manualControlsEnabled={manualControlsEnabled} pending={pending} request={request} message={message} /></>}
     <section className="feature-delivery-snapshot"><div className="dashboard-section-heading"><div><p className="eyebrow">PROJECT FEATURES</p><h2>Project features</h2></div></div>{featureSnapshots.length ? <div className="feature-snapshot-grid">{featureSnapshots.map((feature) => { const featureKey = `feature-${feature.id}`; const isComplete = feature.state === "completed"; return <article className="feature-snapshot-card" key={feature.id}><div><span className={`feature-state ${feature.state}`}>{feature.state.replaceAll("_", " ")}</span><h3>{feature.name}</h3></div><p>{feature.summary}</p>{feature.detail.length ? <details><summary>Details</summary><ul>{feature.detail.slice(0, 6).map((detail) => <li key={detail}>{detail}</li>)}</ul></details> : null}<div className="decision-actions"><button className="button secondary" disabled={pending === featureKey} onClick={() => updateFeature(featureKey, feature.id, isComplete ? "active" : "completed")}>{pending === featureKey ? "Saving…" : isComplete ? "Resume development" : "Mark feature complete"}</button></div></article>; })}</div> : <article className="feature-snapshot-empty"><strong>No project features have been defined yet.</strong><p>Once features are added during project setup, each one will appear here—even before implementation begins.</p></article>}</section>
   </>;
 }
@@ -131,7 +144,7 @@ export function DashboardActionCenter({ projectId, tasks, clarifications, featur
 function planningOutcomeMessage(payload: Record<string, unknown>) {
   if (payload.type === "task") return "Axiom created a task proposal. It is now waiting for your approval.";
   if (payload.type === "clarification") return "Axiom needs a clarification before it can safely propose this task.";
-  if (payload.type === "no_work" || payload.type === "idle") return typeof payload.message === "string" ? `No task proposed: ${payload.message}` : "Axiom found no justified bounded task to propose.";
+  if (payload.type === "idle") return typeof payload.message === "string" ? payload.message : "Every eligible scope already has a task or clarification.";
   return "Axiom completed the planning check.";
 }
 

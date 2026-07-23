@@ -6,6 +6,9 @@ export async function POST(_request: Request, { params }: { params: Promise<{ pr
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return Response.json({ error: "Sign in before running automation." }, { status: 401 });
+  const { data: project } = await supabase.from("projects").select("state").eq("id", projectId).maybeSingle();
+  if (!project) return Response.json({ error: "Project not found." }, { status: 404 });
+  if (project.state === "completed") return Response.json({ error: "Resume the completed project before running automation." }, { status: 409 });
   try {
     const results = await runAutomationCycle({ supabase, projectId, owner: "human-debug-cycle-" + user.id });
     await Promise.all(results
