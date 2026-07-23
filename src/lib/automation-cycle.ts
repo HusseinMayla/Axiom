@@ -7,7 +7,7 @@ import { evaluateCompletedTask } from "@/lib/task-evaluation-service";
 import { executeNextTask } from "@/app/api/projects/[projectId]/execute-next/route";
 import { isGeminiRateLimitError } from "@/lib/ai/gemini";
 import { cancelActiveRun } from "@/lib/execution/active-run";
-import { isPlanningScopeEligible, planningScopeBlocker } from "@/lib/automation-eligibility";
+import { isPlanningScopeEligible, planningScopeBlocker, planningScopeCounter } from "@/lib/automation-eligibility";
 
 type Supabase = SupabaseClient;
 const LEASE_TTL_MS = 2 * 60_000;
@@ -75,9 +75,10 @@ async function runDeliveryLane(supabase: Supabase, projectId: string, owner: str
 
 async function runPlanningLane(supabase: Supabase, projectId: string, owner: string, openTasks: Array<{ id: string; category: string; feature_id: string | null; state: string; objective: string }>, features: Array<{ id: string }>, questions: Array<{ feature_id: string | null }>): Promise<CycleResult[]> {
   const generalBlocker = planningScopeBlocker({ category: "general" }, openTasks, questions);
+  const generalCounter = planningScopeCounter({ category: "general" }, openTasks, questions);
   const generalBlockers = openTasks.filter((task) => task.category === "general");
   const results: CycleResult[] = [];
-  if (!generalBlocker) {
+  if (generalCounter < 1) {
     if (await claim(supabase, projectId, "planning", null, "propose", owner)) {
       const generalResult = await plan(supabase, projectId, owner, null, "Claimed a general-task proposal check.");
       results.push(generalResult);
@@ -87,7 +88,7 @@ async function runPlanningLane(supabase: Supabase, projectId: string, owner: str
     }
   }
   const blockedFeatures = new Set(questions.flatMap((question) => question.feature_id ? [question.feature_id] : []));
-  const eligibleFeatures = features.filter((feature) => isPlanningScopeEligible({ category: "feature", featureId: feature.id }, openTasks, questions));
+  const eligibleFeatures = features.filter((feature) => planningScopeCounter({ category: "feature", featureId: feature.id }, openTasks, questions) < 1);
   for (const feature of eligibleFeatures) {
     if (!await claim(supabase, projectId, "planning", null, "propose", owner)) {
       results.push(idle("Feature planning is already being claimed by another automation cycle.", { required_action: "propose", scope: "feature", feature_id: feature.id, lease: await leaseDetails(supabase, projectId, "planning") }));
@@ -176,10 +177,11 @@ async function plan(supabase: Supabase, projectId: string, owner: string, featur
     const repository = repositoryFromSettings(project?.settings);
     if (!root || !repository) throw new Error("Approved context or repository connection is missing.");
     const scan = await scanRepository(repository);
-    const [{ data: featureNode }, { data: activeTasks }, { data: outcomes }] = await Promise.all([
+    const [{ data: featureNode }, { data: activeTasks }, { data: outcomes }, { data: answeredClarifications }] = await Promise.all([
       feature?.context_node_id ? supabase.from("context_nodes").select("content").eq("id", feature.context_node_id).maybeSingle() : Promise.resolve({ data: null }),
       supabase.from("tasks").select("id, category, priority, feature_id, state, objective").eq("project_id", projectId).in("state", ["planned", "queued", "running", "pending_review", "waiting_for_approval", "waiting_for_human_approval", "approved"]).is("archived_at", null),
       supabase.from("events").select("event_type, payload, created_at").eq("project_id", projectId).in("event_type", ["task_completed", "task_rejected", "task_feedback"]).order("created_at", { ascending: false }).limit(8),
+      supabase.from("clarification_questions").select("feature_id, question, answer, rationale, answered_at").eq("project_id", projectId).eq("status", "answered").order("answered_at", { ascending: false }).limit(20),
     ]);
     const rootContext = (root.content ?? {}) as Record<string, unknown>;
     const target = feature
@@ -204,6 +206,7 @@ async function plan(supabase: Supabase, projectId: string, owner: string, featur
       repositoryMap,
       activeTasks: activeTasks ?? [],
       recentOutcomes: outcomes ?? [],
+      clarificationHistory: (answeredClarifications ?? []).filter((item) => item.feature_id === featureId),
       trigger: "automation",
       model: engineerModelFromSettings(project?.settings),
       onRateLimit: async (info) => event(supabase, projectId, "automation_rate_limit_retry", {

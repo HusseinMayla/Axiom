@@ -48,6 +48,7 @@ export async function proposeTask({
   repositoryMap,
   activeTasks,
   recentOutcomes,
+  clarificationHistory = [],
   humanRecommendation,
   trigger = humanRecommendation ? "human" : "automation",
   model,
@@ -58,6 +59,7 @@ export async function proposeTask({
   repositoryMap: unknown;
   activeTasks: unknown;
   recentOutcomes: unknown;
+  clarificationHistory?: unknown;
   humanRecommendation?: string;
   trigger?: "human" | "automation";
   model?: string;
@@ -100,6 +102,7 @@ export async function proposeTask({
     "Repository map and currently ingested files:", JSON.stringify(repositoryMap),
     "Current active tasks. Do not duplicate, bypass, or conflict with them:", JSON.stringify(activeTasks),
     "Recent task outcomes:", JSON.stringify(recentOutcomes),
+    "Answered clarifications for this exact scope (these are human decisions; do not ask the same question again):", JSON.stringify(clarificationHistory),
   ].join("\n\n");
 
   const interaction = await withGeminiRateLimitRetry(() => client.interactions.create({

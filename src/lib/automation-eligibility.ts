@@ -14,6 +14,24 @@ export type OpenClarification = {
 export type ScopeBlocker = "task" | "clarification" | null;
 
 /**
+ * Counts live planning obligations for one scope. Historical completed or
+ * archived tasks are intentionally absent from `tasks` before this function is
+ * called, so they never prevent a future improvement from being proposed.
+ */
+export function planningScopeCounter(
+  scope: PlanningScope,
+  tasks: PlanningTask[],
+  questions: OpenClarification[],
+) {
+  if (scope.category === "general") {
+    return tasks.filter((task) => task.category === "general").length
+      + questions.filter((question) => question.feature_id === null).length;
+  }
+  return tasks.filter((task) => task.feature_id === scope.featureId).length
+    + questions.filter((question) => question.feature_id === scope.featureId).length;
+}
+
+/**
  * A proposal may only be blocked by work or a clarification for its own scope.
  * A null feature_id denotes a project-wide (general) clarification.
  */
@@ -22,13 +40,14 @@ export function planningScopeBlocker(
   tasks: PlanningTask[],
   questions: OpenClarification[],
 ): ScopeBlocker {
+  if (planningScopeCounter(scope, tasks, questions) === 0) return null;
   if (scope.category === "general") {
     if (questions.some((question) => question.feature_id === null)) return "clarification";
-    return tasks.some((task) => task.category === "general") ? "task" : null;
+    return "task";
   }
 
   if (questions.some((question) => question.feature_id === scope.featureId)) return "clarification";
-  return tasks.some((task) => task.feature_id === scope.featureId) ? "task" : null;
+  return "task";
 }
 
 export function isPlanningScopeEligible(
