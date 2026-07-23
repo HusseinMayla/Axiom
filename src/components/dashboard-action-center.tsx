@@ -38,30 +38,6 @@ export function DashboardActionCenter({ projectId, tasks, clarifications, featur
     return () => { window.clearInterval(interval); document.removeEventListener("visibilitychange", refreshWhenVisible); };
   }, [router]);
 
-  useEffect(() => {
-    if (automationState !== "running") return;
-    let busy = false;
-    const runCycle = async () => {
-      if (busy) return;
-      busy = true;
-      try {
-        const response = await fetch(`/api/projects/${projectId}/automation/cycle`, { method: "POST" });
-        if (!response.ok) {
-          const payload = await response.json().catch(() => ({}));
-          console.error("Axiom automation cycle failed", { projectId, status: response.status, statusText: response.statusText, payload });
-          setMessage(payload.error ?? "Automatic task planning could not start.");
-        }
-      } catch {
-        setMessage("Automatic task planning could not reach the server.");
-      } finally {
-        busy = false;
-      }
-    };
-    void runCycle();
-    const timer = window.setInterval(() => void runCycle(), 5_000);
-    return () => window.clearInterval(timer);
-  }, [automationState, projectId]);
-
   const manualControlsEnabled = automationState === "frozen";
   const proposals = tasks.filter((task) => task.state === "waiting_for_approval" || task.state === "planned");
   const failedTasks = manualControlsEnabled ? [] : tasks.filter((task) => task.state === "failed");

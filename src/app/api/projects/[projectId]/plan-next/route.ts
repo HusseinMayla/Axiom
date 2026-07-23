@@ -3,6 +3,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { proposeTask } from "@/lib/ai/task-planning";
 import { normalizeHumanPrerequisites, serializeHumanPrerequisites } from "@/lib/human-prerequisites";
 import { scanRepository, type AvailableRepository } from "@/lib/github/app";
+import { planningScopeBlocker } from "@/lib/automation-eligibility";
 
 const ACTIVE_TASK_STATES = ["planned", "queued", "running", "pending_review", "waiting_for_approval", "waiting_for_human_approval", "approved"];
 const requestSchema = z.object({
@@ -74,11 +75,15 @@ export async function POST(
   if (guidedRequest?.category === "feature" && feature && (occupiedFeatureIds.has(feature.id) || blockedFeatureIds.has(feature.id))) {
     return Response.json({ error: "That feature already has an active task or needs clarification." }, { status: 409 });
   }
-  if (!guidedRequest && !requiresFoundationTask && !feature) {
+  const generalBlocker = planningScopeBlocker({ category: "general" }, activeTasks ?? [], openQuestions ?? []);
+  if (guidedRequest?.category === "general" && generalBlocker) {
+    return Response.json({ error: generalBlocker === "clarification" ? "Answer the project-wide clarification before proposing more general work." : "A general task is already awaiting a decision or in progress." }, { status: 409 });
+  }
+  if (!guidedRequest && !feature && (!requiresFoundationTask || generalBlocker)) {
     return Response.json({ type: "idle", message: "No active feature is eligible for an automated task proposal." });
   }
 
-  const isGeneral = guidedRequest?.category === "general" || (!guidedRequest && (requiresFoundationTask || !feature));
+  const isGeneral = guidedRequest?.category === "general" || (!guidedRequest && requiresFoundationTask && !generalBlocker);
   const { data: featureNode } = feature?.context_node_id
     ? await supabase.from("context_nodes").select("content").eq("id", feature.context_node_id).maybeSingle()
     : { data: null };

@@ -7,6 +7,7 @@ import { evaluateCompletedTask } from "@/lib/task-evaluation-service";
 import { executeNextTask } from "@/app/api/projects/[projectId]/execute-next/route";
 import { isGeminiRateLimitError } from "@/lib/ai/gemini";
 import { cancelActiveRun } from "@/lib/execution/active-run";
+import { isPlanningScopeEligible, planningScopeBlocker } from "@/lib/automation-eligibility";
 
 type Supabase = SupabaseClient;
 const LEASE_TTL_MS = 2 * 60_000;
@@ -19,6 +20,10 @@ type CycleDetails = Record<string, unknown>;
 type CycleResult = { lane: "planning" | "delivery"; action: "propose" | "execute" | "evaluate"; taskId: string | null; featureId: string | null; reason: string; details?: CycleDetails } | { lane: null; action: "idle"; taskId: null; featureId: null; reason: string; details?: CycleDetails };
 
 export async function runAutomationCycle({ supabase, projectId, owner = "automation-" + randomUUID() }: { supabase: Supabase; projectId: string; owner?: string }): Promise<CycleResult[]> {
+  // Callers such as the recurring scheduler use a stable label. The actual lease
+  // owner must still be unique per cycle so an expired worker can never heartbeat
+  // or release a newer worker's lease.
+  const cycleOwner = owner + "-" + randomUUID();
   const { data: project } = await supabase.from("projects").select("automation_state, automation_cooldown_until, state").eq("id", projectId).maybeSingle();
   if (!project || project.state !== "active") return [idle("Project context is not active.")];
   if (project.automation_state === "frozen") return [idle("Automation is frozen by a human.")];
@@ -38,8 +43,8 @@ export async function runAutomationCycle({ supabase, projectId, owner = "automat
   // not prevent the planner from proposing the next task for their scope.
   const planningTasks = openTasks.filter((task) => PLANNING_OCCUPYING_STATES.has(task.state));
   return Promise.all([
-    runDeliveryLane(supabase, projectId, owner, openTasks),
-    runPlanningLane(supabase, projectId, owner, planningTasks, features ?? [], questions ?? []),
+    runDeliveryLane(supabase, projectId, cycleOwner, openTasks),
+    runPlanningLane(supabase, projectId, cycleOwner, planningTasks, features ?? [], questions ?? []),
   ]);
 }
 
@@ -62,16 +67,17 @@ async function runDeliveryLane(supabase: Supabase, projectId: string, owner: str
 }
 
 async function runPlanningLane(supabase: Supabase, projectId: string, owner: string, openTasks: Array<{ id: string; category: string; feature_id: string | null; state: string; objective: string }>, features: Array<{ id: string }>, questions: Array<{ feature_id: string | null }>): Promise<CycleResult> {
+  const generalBlocker = planningScopeBlocker({ category: "general" }, openTasks, questions);
   const generalBlockers = openTasks.filter((task) => task.category === "general");
-  const hasGeneral = generalBlockers.length > 0;
-  if (!hasGeneral && await claim(supabase, projectId, "planning", null, "propose", owner)) return plan(supabase, projectId, owner, null, "Claimed a general-task proposal check.");
-  if (!hasGeneral) return idle("General-task planning is already being claimed by another automation cycle.", { required_action: "propose", scope: "general", lease: await leaseDetails(supabase, projectId, "planning") });
+  if (!generalBlocker && await claim(supabase, projectId, "planning", null, "propose", owner)) return plan(supabase, projectId, owner, null, "Claimed a general-task proposal check.");
+  if (!generalBlocker) return idle("General-task planning is already being claimed by another automation cycle.", { required_action: "propose", scope: "general", lease: await leaseDetails(supabase, projectId, "planning") });
   const blockedFeatures = new Set(questions.flatMap((question) => question.feature_id ? [question.feature_id] : []));
-  const feature = features.find((candidate) => !blockedFeatures.has(candidate.id) && !openTasks.some((task) => task.feature_id === candidate.id));
+  const feature = features.find((candidate) => isPlanningScopeEligible({ category: "feature", featureId: candidate.id }, openTasks, questions));
   if (feature && await claim(supabase, projectId, "planning", null, "propose", owner)) return plan(supabase, projectId, owner, feature.id, "Claimed a feature-task proposal check.");
   if (feature) return idle("Feature planning is already being claimed by another automation cycle.", { required_action: "propose", scope: "feature", feature_id: feature.id, lease: await leaseDetails(supabase, projectId, "planning") });
   return idle("No eligible general or feature scope needs planning.", {
     blocking_general_tasks: taskDetails(generalBlockers),
+    general_scope_blocker: generalBlocker,
     blocking_feature_tasks: taskDetails(openTasks.filter((task) => task.feature_id !== null)),
     feature_ids_with_open_clarifications: [...blockedFeatures],
     active_feature_ids: features.map((feature) => feature.id),
@@ -92,13 +98,14 @@ async function evaluate(supabase: Supabase, projectId: string, taskId: string, o
     }
     throw error;
   } finally {
-    await supabase.from("automation_leases").delete().eq("project_id", projectId).eq("lane", "delivery").eq("owner", owner);
+    await release(supabase, projectId, "delivery", owner);
   }
 }
 
 async function execute(supabase: Supabase, projectId: string, taskId: string, owner: string): Promise<CycleResult> {
+  let releaseLease = true;
   try {
-    const response = await withLeaseHeartbeat(supabase, projectId, "delivery", owner, () => executeNextTask(supabase, projectId, "automation"), () => cancelActiveRun(taskId));
+    const response = await withLeaseHeartbeat(supabase, projectId, "delivery", owner, () => executeNextTask(supabase, projectId, "automation", taskId, owner), () => cancelActiveRun(taskId));
     const body = await response.json() as { type?: string; error?: string; message?: string; taskId?: string; rateLimited?: boolean; code?: string; diagnostic?: string; next_step?: string };
     if (body.rateLimited) {
       await cooldown(supabase, projectId, "Developer execution remained rate-limited after retrying for 100 seconds.");
@@ -113,6 +120,12 @@ async function execute(supabase: Supabase, projectId: string, taskId: string, ow
       return result("delivery", "execute", taskId, null, reason);
     }
     if (body.taskId && body.taskId !== taskId) throw new Error("The execution queue changed after its automation lease was claimed.");
+    if (body.type === "dispatched") {
+      // The remote worker received the owner token and is now responsible for
+      // heartbeating and releasing this delivery lease.
+      releaseLease = false;
+      return result("delivery", "execute", taskId, null, body.message ?? "Task dispatched to the isolated worker.");
+    }
     if (body.type === "pending_review") {
       await event(supabase, projectId, "automation_evaluation_started", { task_id: taskId, lane: "delivery", message: "Execution finished; AI review started immediately." });
       const review = await evaluateCompletedTask(supabase, projectId, taskId, "automation");
@@ -123,7 +136,7 @@ async function execute(supabase: Supabase, projectId: string, taskId: string, ow
     }
     return result("delivery", "execute", taskId, null, body.type === "retry" ? "Execution finished with a deterministic retry." : body.message ?? "Execution completed.");
   } finally {
-    await supabase.from("automation_leases").delete().eq("project_id", projectId).eq("lane", "delivery").eq("owner", owner);
+    if (releaseLease) await release(supabase, projectId, "delivery", owner);
   }
 }
 
@@ -178,6 +191,7 @@ async function plan(supabase: Supabase, projectId: string, owner: string, featur
         message: "AI planner was rate-limited; retry " + info.attempt + " begins in " + (info.retryInMs / 1000) + " seconds.",
       }),
     });
+    await assertLeaseOwned(supabase, projectId, "planning", owner);
     if (proposal.type === "no_work") {
       const fallback = correctiveFoundationProposal(proposal.reason, target.category);
       if (fallback) {
@@ -223,7 +237,7 @@ async function plan(supabase: Supabase, projectId: string, owner: string, featur
       return result("planning", "propose", null, featureId, "Task planning is rate-limited; automation is cooling down.");
     }
     throw error;
-  } finally { await supabase.from("automation_leases").delete().eq("project_id", projectId).eq("lane", "planning").eq("owner", owner); }
+  } finally { await release(supabase, projectId, "planning", owner); }
 }
 
 async function event(supabase: Supabase, projectId: string, event_type: string, payload: Record<string, unknown>) { await supabase.from("events").insert({ project_id: projectId, actor_type: "ai", event_type, payload }); }
@@ -250,14 +264,34 @@ async function claim(supabase: Supabase, projectId: string, lane: "planning" | "
   return data === true;
 }
 
+async function release(supabase: Supabase, projectId: string, lane: "planning" | "delivery", owner: string) {
+  const { data, error } = await supabase.rpc("release_automation_lease", { p_project_id: projectId, p_lane: lane, p_owner: owner });
+  if (error) throw new Error("Could not release automation lease: " + error.message);
+  if (data !== true) console.warn("Automation lease was already released or replaced", { projectId, lane, owner });
+}
+
+async function assertLeaseOwned(supabase: Supabase, projectId: string, lane: "planning" | "delivery", owner: string) {
+  const { data, error } = await supabase
+    .from("automation_leases")
+    .select("owner")
+    .eq("project_id", projectId)
+    .eq("lane", lane)
+    .eq("owner", owner)
+    .gt("expires_at", new Date().toISOString())
+    .maybeSingle();
+  if (error) throw new Error("Could not verify automation lease ownership: " + error.message);
+  if (!data) throw new Error("Automation lease was lost before the action could be persisted.");
+}
+
 async function recoverExpiredLeases(supabase: Supabase, projectId: string) {
   const now = new Date();
   const stalePlanningBefore = new Date(now.getTime() - STALE_PLANNING_LEASE_MS).toISOString();
   const { data: expired, error } = await supabase.from("automation_leases").select("lane, task_id, action, owner, expires_at, heartbeat_at").eq("project_id", projectId).lte("expires_at", now.toISOString());
   if (error) throw new Error("Could not inspect expired automation leases: " + error.message);
   for (const lease of expired ?? []) {
-    const { error: deleteError } = await supabase.from("automation_leases").delete().eq("project_id", projectId).eq("lane", lease.lane).eq("owner", lease.owner).lte("expires_at", now.toISOString());
-    if (deleteError) throw new Error("Could not recover expired automation lease: " + deleteError.message);
+    const { data: recovered, error: recoveryError } = await supabase.rpc("recover_expired_automation_lease", { p_project_id: projectId, p_lane: lease.lane, p_owner: lease.owner });
+    if (recoveryError) throw new Error("Could not recover expired automation lease: " + recoveryError.message);
+    if (recovered !== true) continue;
     await event(supabase, projectId, "automation_lease_recovered", { lane: lease.lane, task_id: lease.task_id, action: lease.action, owner: lease.owner, expired_at: lease.expires_at, reason: "Lease expired before the owner released it." });
     if (lease.action !== "execute" || !lease.task_id) continue;
     const { data: task } = await supabase.from("tasks").select("state").eq("id", lease.task_id).eq("project_id", projectId).maybeSingle();
@@ -275,8 +309,9 @@ async function recoverExpiredLeases(supabase: Supabase, projectId: string) {
   const { data: stalePlanning, error: staleError } = await supabase.from("automation_leases").select("lane, task_id, action, owner, expires_at, heartbeat_at").eq("project_id", projectId).eq("lane", "planning").lt("heartbeat_at", stalePlanningBefore);
   if (staleError) throw new Error("Could not inspect stale planning leases: " + staleError.message);
   for (const lease of stalePlanning ?? []) {
-    const { error: deleteError } = await supabase.from("automation_leases").delete().eq("project_id", projectId).eq("lane", "planning").eq("owner", lease.owner).lt("heartbeat_at", stalePlanningBefore);
-    if (deleteError) throw new Error("Could not recover stale planning lease: " + deleteError.message);
+    const { data: recovered, error: recoveryError } = await supabase.rpc("recover_stale_automation_lease", { p_project_id: projectId, p_lane: "planning", p_owner: lease.owner, p_stale_before: stalePlanningBefore });
+    if (recoveryError) throw new Error("Could not recover stale planning lease: " + recoveryError.message);
+    if (recovered !== true) continue;
     await event(supabase, projectId, "automation_lease_recovered", { lane: "planning", task_id: null, action: lease.action, owner: lease.owner, heartbeat_at: lease.heartbeat_at, expired_at: lease.expires_at, reason: "Planning lease stopped sending heartbeats for more than 90 seconds and was released." });
   }
 }

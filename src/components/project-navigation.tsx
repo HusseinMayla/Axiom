@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
+import { AiPlannerStatusWidget } from "@/components/ai-planner-status-widget";
 
 type ProjectNavigationProps = {
   projectId: string;
@@ -115,6 +116,7 @@ export function ProjectNavigation({
             );
           })}
         </nav>
+        <AiPlannerStatusWidget projectId={projectId} initialState={automation} />
       </aside>
 
       <header className="mobile-project-header">

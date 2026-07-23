@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
+import { after } from "next/server";
 import { z } from "zod";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { runAutomationCycle } from "@/lib/automation-cycle";
 
 const approvalSchema = z.object({
   activeFeatureIds: z.array(z.string().uuid()).min(1).max(12),
@@ -106,6 +108,15 @@ export async function POST(
     actor_type: "human",
     event_type: "context_approved",
     payload: { active_feature_ids: selectedIds, held_feature_ids: heldIds },
+  });
+
+  after(async () => {
+    try {
+      const results = await runAutomationCycle({ supabase, projectId, owner: "context-approved-" + user.id });
+      await supabase.from("events").insert({ project_id: projectId, actor_type: "system", event_type: "automation_woken_by_context_approval", payload: { results } });
+    } catch (error) {
+      await supabase.from("events").insert({ project_id: projectId, actor_type: "system", event_type: "automation_wake_failed", payload: { reason: error instanceof Error ? error.message : "Automation wake-up failed after context approval." } });
+    }
   });
 
   return Response.json({ ok: true, activeFeatureIds: selectedIds });

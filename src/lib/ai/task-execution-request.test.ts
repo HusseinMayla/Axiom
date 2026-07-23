@@ -5,6 +5,7 @@ const generateContent = vi.hoisted(() => vi.fn());
 vi.mock("./gemini", () => ({
   createGeminiClient: () => ({ models: { generateContent } }),
   getGeminiModel: () => "test-model",
+  resolveConfiguredGeminiModel: () => "test-model",
   withGeminiRateLimitRetry: <T>(operation: () => Promise<T>) => operation(),
 }));
 

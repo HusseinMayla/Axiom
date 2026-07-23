@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
+import { after } from "next/server";
 import { z } from "zod";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { runAutomationCycle } from "@/lib/automation-cycle";
 
 const answersSchema = z.object({
   answers: z.array(z.object({
@@ -64,6 +66,15 @@ export async function PUT(
     .from("project_discovery")
     .update({ stage: "submitted", updated_at: new Date().toISOString() })
     .eq("project_id", projectId);
+
+  after(async () => {
+    try {
+      const results = await runAutomationCycle({ supabase, projectId, owner: "clarification-answered-" + user.id });
+      await supabase.from("events").insert({ project_id: projectId, actor_type: "system", event_type: "automation_woken_by_clarification", payload: { clarification_ids: parsed.data.answers.map((answer) => answer.id), results } });
+    } catch (error) {
+      await supabase.from("events").insert({ project_id: projectId, actor_type: "system", event_type: "automation_wake_failed", payload: { reason: error instanceof Error ? error.message : "Automation wake-up failed after clarification." } });
+    }
+  });
 
   return Response.json({ ok: true });
 }

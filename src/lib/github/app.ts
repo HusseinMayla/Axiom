@@ -218,7 +218,7 @@ export function hasGitHubActionsWorker() {
 }
 
 /** Dispatches the central Axiom worker workflow with a narrowly scoped task ID. */
-export async function dispatchAxiomWorker(taskId: string) {
+export async function dispatchAxiomWorker(taskId: string, leaseOwner?: string) {
   const configuredRepository = process.env.AXIOM_WORKER_REPOSITORY?.trim().toLowerCase();
   if (!configuredRepository) throw new Error("GitHub Actions worker is not configured. Add AXIOM_WORKER_REPOSITORY to the deployment environment.");
 
@@ -233,7 +233,7 @@ export async function dispatchAxiomWorker(taskId: string) {
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ref: workerRepository.defaultBranch, inputs: { task_id: taskId } }),
+      body: JSON.stringify({ ref: workerRepository.defaultBranch, inputs: { task_id: taskId, ...(leaseOwner ? { lease_owner: leaseOwner } : {}) } }),
     },
   );
   return workerRepository.fullName;

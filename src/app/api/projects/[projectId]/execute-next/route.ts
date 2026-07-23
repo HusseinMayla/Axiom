@@ -33,25 +33,7 @@ type TaskRecord = {
   features: Array<{ context_node_id: string | null }> | null;
 };
 
-export async function executeNextTask(supabase: SupabaseClient, projectId: string, trigger: "human" | "automation" = "human", requestedTaskId?: string) {
-
-  const availability = await dockerAvailability();
-  if (!availability.available) {
-    const deployedOnVercel = process.env.VERCEL === "1";
-    console.error("Axiom execution host is unavailable", {
-      projectId,
-      requestedTaskId,
-      host: deployedOnVercel ? "vercel" : "local",
-      diagnostic: availability.diagnostic,
-    });
-    return Response.json({
-      error: availability.reason,
-      code: "docker_unavailable",
-      diagnostic: availability.diagnostic,
-      ...(deployedOnVercel ? { next_step: "This deployment cannot run Docker locally. Configure this route to dispatch the GitHub Actions worker." } : {}),
-    }, { status: 503 });
-  }
-
+export async function executeNextTask(supabase: SupabaseClient, projectId: string, trigger: "human" | "automation" = "human", requestedTaskId?: string, automationLeaseOwner?: string) {
   const { data: project } = await supabase
     .from("projects")
     .select("id, state, settings, automation_state")
@@ -113,6 +95,29 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
       : Promise.resolve({ data: null }),
   ]);
   if (!rootNode) return Response.json({ error: "Approved project context is missing." }, { status: 409 });
+
+  // Validate the project, task, and human prerequisites before dispatching. The
+  // remote worker is an execution host, not a way around normal queue guards.
+  if (process.env.VERCEL === "1" && hasGitHubActionsWorker()) {
+    return dispatchNextTaskToWorker(supabase, projectId, typedTask.id, automationLeaseOwner);
+  }
+
+  const availability = await dockerAvailability();
+  if (!availability.available) {
+    const deployedOnVercel = process.env.VERCEL === "1";
+    console.error("Axiom execution host is unavailable", {
+      projectId,
+      requestedTaskId,
+      host: deployedOnVercel ? "vercel" : "local",
+      diagnostic: availability.diagnostic,
+    });
+    return Response.json({
+      error: availability.reason,
+      code: "docker_unavailable",
+      diagnostic: availability.diagnostic,
+      ...(deployedOnVercel ? { next_step: "This deployment cannot run Docker locally. Configure this route to dispatch the GitHub Actions worker." } : {}),
+    }, { status: 503 });
+  }
 
   if (hasActiveRun(typedTask.id)) {
     return Response.json({ error: "This task is already running in this server process." }, { status: 409 });
@@ -451,29 +456,30 @@ export async function POST(
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return Response.json({ error: "Sign in before running a task." }, { status: 401 });
-  if (process.env.VERCEL === "1" && hasGitHubActionsWorker()) {
-    let taskId = requestedTaskId;
-    if (!taskId) {
-      const { data: nextTask } = await supabase.from("tasks").select("id").eq("project_id", projectId).in("state", ["approved", "queued", "failed"]).is("archived_at", null).order("category").order("priority").order("created_at").limit(1).maybeSingle();
-      taskId = nextTask?.id;
-    }
-    if (!taskId) return Response.json({ type: "idle", message: "No approved task is waiting for execution." });
-    const { data: claimedTask, error: claimError } = await supabase.from("tasks")
-      .update({ state: "running", execution_started_at: new Date().toISOString(), review_feedback: "Task is waiting for the isolated GitHub Actions worker to start.", updated_at: new Date().toISOString() })
-      .eq("id", taskId).eq("project_id", projectId).in("state", ["approved", "queued", "failed"])
-      .select("id").maybeSingle();
-    if (claimError || !claimedTask) return Response.json({ error: "This task has already been claimed or is no longer ready to run.", code: "task_already_claimed" }, { status: 409 });
-    try {
-      const workerRepository = await dispatchAxiomWorker(taskId);
-      return Response.json({ type: "dispatched", taskId, message: "Task dispatched to the isolated GitHub Actions worker.", workerRepository });
-    } catch (error) {
-      const diagnostic = error instanceof Error ? error.message : String(error);
-      await supabase.from("tasks").update({ state: "approved", execution_started_at: null, review_feedback: "Could not dispatch the GitHub Actions worker: " + diagnostic, updated_at: new Date().toISOString() }).eq("id", taskId).eq("project_id", projectId);
-      console.error("Axiom could not dispatch the GitHub Actions worker", { projectId, taskId, diagnostic });
-      return Response.json({ error: "Could not dispatch the GitHub Actions worker.", code: "worker_dispatch_failed", diagnostic }, { status: 502 });
-    }
-  }
   return executeNextTask(supabase, projectId, "human", requestedTaskId);
+}
+
+async function dispatchNextTaskToWorker(supabase: SupabaseClient, projectId: string, requestedTaskId?: string, automationLeaseOwner?: string) {
+  let taskId = requestedTaskId;
+  if (!taskId) {
+    const { data: nextTask } = await supabase.from("tasks").select("id").eq("project_id", projectId).in("state", ["approved", "queued", "failed"]).is("archived_at", null).order("category").order("priority").order("created_at").limit(1).maybeSingle();
+    taskId = nextTask?.id;
+  }
+  if (!taskId) return Response.json({ type: "idle", message: "No approved task is waiting for execution." });
+  const { data: claimedTask, error: claimError } = await supabase.from("tasks")
+    .update({ state: "running", execution_started_at: new Date().toISOString(), review_feedback: "Task is waiting for the isolated GitHub Actions worker to start.", updated_at: new Date().toISOString() })
+    .eq("id", taskId).eq("project_id", projectId).in("state", ["approved", "queued", "failed"])
+    .select("id").maybeSingle();
+  if (claimError || !claimedTask) return Response.json({ error: "This task has already been claimed or is no longer ready to run.", code: "task_already_claimed" }, { status: 409 });
+  try {
+    const workerRepository = await dispatchAxiomWorker(taskId, automationLeaseOwner);
+    return Response.json({ type: "dispatched", taskId, message: "Task dispatched to the isolated GitHub Actions worker.", workerRepository });
+  } catch (error) {
+    const diagnostic = error instanceof Error ? error.message : String(error);
+    await supabase.from("tasks").update({ state: "approved", execution_started_at: null, review_feedback: "Could not dispatch the GitHub Actions worker: " + diagnostic, updated_at: new Date().toISOString() }).eq("id", taskId).eq("project_id", projectId);
+    console.error("Axiom could not dispatch the GitHub Actions worker", { projectId, taskId, diagnostic });
+    return Response.json({ error: "Could not dispatch the GitHub Actions worker.", code: "worker_dispatch_failed", diagnostic }, { status: 502 });
+  }
 }
 
 function stringList(value: unknown) {

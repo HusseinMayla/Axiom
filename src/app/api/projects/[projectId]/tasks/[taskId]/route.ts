@@ -107,15 +107,16 @@ export async function PATCH(
   const { error } = await supabase.from("tasks").update(update).eq("id", taskId);
   if (error) return Response.json({ error: error.message }, { status: 500 });
 
-  // A human approval is a durable automation wake-up, not a cue to wait for the
-  // next browser polling interval before starting eligible work.
-  if (parsed.data.approve) {
+  // A human approval or merge is a durable automation wake-up, not a cue to
+  // wait for the next browser polling interval before planning the next useful
+  // improvement from the updated repository state.
+  if (parsed.data.approve || parsed.data.mergeHumanApproval) {
     after(async () => {
       const { data: project } = await supabase.from("projects").select("automation_state").eq("id", projectId).maybeSingle();
       if (project?.automation_state !== "running") return;
       try {
         const results = await runAutomationCycle({ supabase, projectId, owner: "task-approved-" + taskId + "-" + user.id });
-        await supabase.from("events").insert({ project_id: projectId, actor_type: "system", event_type: "automation_woken_by_approval", payload: { task_id: taskId, message: "Task approval immediately woke automation.", results } });
+        await supabase.from("events").insert({ project_id: projectId, actor_type: "system", event_type: "automation_woken_by_human_decision", payload: { task_id: taskId, decision: parsed.data.mergeHumanApproval ? "merged" : "approved", message: "Human decision immediately woke automation to inspect and plan the next improvement.", results } });
       } catch (wakeError) {
         await supabase.from("events").insert({ project_id: projectId, actor_type: "system", event_type: "automation_wake_failed", payload: { task_id: taskId, reason: wakeError instanceof Error ? wakeError.message : "Automation wake-up failed." } });
       }

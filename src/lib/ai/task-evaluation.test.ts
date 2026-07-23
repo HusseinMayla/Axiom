@@ -5,6 +5,7 @@ const createInteraction = vi.hoisted(() => vi.fn());
 vi.mock("./gemini", () => ({
   createGeminiClient: () => ({ interactions: { create: createInteraction } }),
   getGeminiModel: () => "test-model",
+  resolveConfiguredGeminiModel: () => "test-model",
   withGeminiRateLimitRetry: <T>(operation: () => Promise<T>) => operation(),
 }));
 
