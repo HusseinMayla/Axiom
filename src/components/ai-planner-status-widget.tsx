@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type AutomationSnapshotResponse = {
   state: "running" | "frozen";
@@ -47,82 +47,102 @@ export function AiPlannerStatusWidget({
   const [snapshot, setSnapshot] = useState<AutomationSnapshotResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [outcomes, setOutcomes] = useState<ResultOutcome[]>([]);
+  const lastAutoCycleKey = useRef<string | null>(null);
+
+  const loadSnapshot = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/projects/${projectId}/automation`, { cache: "no-store" });
+      if (!response.ok) return;
+      const data = (await response.json()) as AutomationSnapshotResponse;
+      setSnapshot(data);
+      setLoading(false);
+
+      // Derive persistent, deduplicated outcomes from recent events
+      if (data.events) {
+        const derivedOutcomes: ResultOutcome[] = [];
+        const seenKeys = new Set<string>();
+
+        for (const ev of data.events) {
+          const payload = ev.payload ?? {};
+          let outcome: ResultOutcome | null = null;
+          const dedupeKey = `${ev.event_type}-${payload.reason ?? payload.question ?? payload.task_id ?? ev.id}`;
+
+          if (seenKeys.has(dedupeKey)) continue;
+
+          if (ev.event_type === "task_proposed") {
+            outcome = {
+              id: ev.id,
+              type: "proposed_task",
+              title: "Task Proposed",
+              detail: String(payload.claimed_reason ?? payload.reason ?? "A task proposal was created for human approval."),
+              timestamp: ev.created_at,
+            };
+          } else if (ev.event_type === "planning_clarification") {
+            outcome = {
+              id: ev.id,
+              type: "question",
+              title: "Clarification Needed",
+              detail: String(payload.question ?? "Planner asked a clarifying question."),
+              timestamp: ev.created_at,
+            };
+          } else if (ev.event_type === "automation_evaluated") {
+            outcome = {
+              id: ev.id,
+              type: "validated_work",
+              title: payload.verdict === "pass" ? "Bot Review Passed" : "Bot Review Feedback",
+              detail: String(payload.summary ?? payload.reason ?? "Completed AI evaluation check."),
+              timestamp: ev.created_at,
+            };
+          }
+
+          if (outcome) {
+            if (outcome.expiresAt && outcome.expiresAt < Date.now()) continue;
+            seenKeys.add(dedupeKey);
+            derivedOutcomes.push(outcome);
+            if (derivedOutcomes.length >= 3) break;
+          }
+        }
+        setOutcomes(derivedOutcomes);
+      }
+    } catch (err) {
+      console.error("Could not load planner status", err);
+    }
+  }, [projectId]);
 
   useEffect(() => {
-    let mounted = true;
-    const fetchSnapshot = async () => {
-      try {
-        const response = await fetch(`/api/projects/${projectId}/automation`, { cache: "no-store" });
-        if (!response.ok) return;
-        const data = (await response.json()) as AutomationSnapshotResponse;
-        if (!mounted) return;
-        setSnapshot(data);
-        setLoading(false);
+    const initialLoad = window.setTimeout(() => void loadSnapshot(), 0);
+    const timer = setInterval(loadSnapshot, 4000);
+    return () => { window.clearTimeout(initialLoad); clearInterval(timer); };
+  }, [loadSnapshot]);
 
-        // Derive persistent, deduplicated outcomes from recent events
-        if (data.events) {
-          const derivedOutcomes: ResultOutcome[] = [];
-          const seenKeys = new Set<string>();
+  const wakeAutomation = useCallback(async () => {
+    const response = await fetch(`/api/projects/${projectId}/automation/cycle`, { method: "POST" });
+    if (!response.ok) console.error("Axiom could not wake its automation queue", await response.json().catch(() => ({ error: "Unknown automation error." })));
+    await loadSnapshot();
+  }, [loadSnapshot, projectId]);
 
-          for (const ev of data.events) {
-            const payload = ev.payload ?? {};
-            let outcome: ResultOutcome | null = null;
-            const dedupeKey = `${ev.event_type}-${payload.reason ?? payload.question ?? payload.task_id ?? ev.id}`;
-
-            if (seenKeys.has(dedupeKey)) continue;
-
-            if (ev.event_type === "task_proposed") {
-              outcome = {
-                id: ev.id,
-                type: "proposed_task",
-                title: "Task Proposed",
-                detail: String(payload.claimed_reason ?? payload.reason ?? "A task proposal was created for human approval."),
-                timestamp: ev.created_at,
-              };
-            } else if (ev.event_type === "planning_clarification") {
-              outcome = {
-                id: ev.id,
-                type: "question",
-                title: "Clarification Needed",
-                detail: String(payload.question ?? "Planner asked a clarifying question."),
-                timestamp: ev.created_at,
-              };
-            } else if (ev.event_type === "automation_evaluated") {
-              outcome = {
-                id: ev.id,
-                type: "validated_work",
-                title: payload.verdict === "pass" ? "Bot Review Passed" : "Bot Review Feedback",
-                detail: String(payload.summary ?? payload.reason ?? "Completed AI evaluation check."),
-                timestamp: ev.created_at,
-              };
-            }
-
-            if (outcome) {
-              if (outcome.expiresAt && outcome.expiresAt < Date.now()) continue;
-              seenKeys.add(dedupeKey);
-              derivedOutcomes.push(outcome);
-              if (derivedOutcomes.length >= 3) break;
-            }
-          }
-          setOutcomes(derivedOutcomes);
-        }
-      } catch (err) {
-        console.error("Could not load planner status", err);
-      }
-    };
-
-    void fetchSnapshot();
-    const timer = setInterval(fetchSnapshot, 4000);
-    return () => {
-      mounted = false;
-      clearInterval(timer);
-    };
-  }, [projectId]);
+  useEffect(() => {
+    const nextPlanning = snapshot?.lanes.planning.nextAction;
+    const nextDelivery = snapshot?.lanes.delivery.nextAction;
+    const shouldWake = snapshot?.state === "running"
+      && snapshot.projectState !== "completed"
+      && !snapshot.cooldownUntil
+      && [nextPlanning, nextDelivery].some((action) => action === "propose" || action === "execute" || action === "evaluate");
+    if (!shouldWake) {
+      lastAutoCycleKey.current = null;
+      return;
+    }
+    const key = [nextPlanning, nextDelivery, snapshot?.events?.[0]?.id ?? "", snapshot?.lanes.delivery.reason ?? ""].join(":");
+    if (lastAutoCycleKey.current === key) return;
+    lastAutoCycleKey.current = key;
+    void wakeAutomation();
+  }, [snapshot, wakeAutomation]);
 
   const state = snapshot?.state ?? initialState ?? "running";
   const isFrozen = state === "frozen";
   const projectCompleted = snapshot?.projectState === "completed";
-  const coolingDown = Boolean(snapshot?.cooldownUntil && new Date(snapshot.cooldownUntil).getTime() > Date.now());
+  // The server returns a cooldown timestamp only while it remains active.
+  const coolingDown = Boolean(snapshot?.cooldownUntil);
 
   // Determine Planning Activity
   const planningLease = snapshot?.lanes.planning.activeLease;

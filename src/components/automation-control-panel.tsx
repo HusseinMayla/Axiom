@@ -28,13 +28,13 @@ export function AutomationControlPanel({ projectId }: { projectId: string }) {
     if (!response.ok) setError((await response.json().catch(() => ({ error: "Could not update automation." }))).error ?? "Could not update automation.");
     await load(); setPending(false);
   };
-  const cycle = async () => {
+  const cycle = useCallback(async () => {
     setCycling(true); setError("");
     const response = await fetch(`/api/projects/${projectId}/automation/cycle`, { method: "POST" });
     const payload = await response.json().catch(() => ({ error: "Could not run automation." }));
     if (!response.ok) setError(payload.error ?? "Could not run automation.");
     await load(); setCycling(false);
-  };
+  }, [load, projectId]);
   const frozen = snapshot?.state === "frozen";
   const projectCompleted = snapshot?.projectState === "completed";
   return <section className="synthesis-panel automation-control-panel">
