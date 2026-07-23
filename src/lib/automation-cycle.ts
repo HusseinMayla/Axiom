@@ -15,7 +15,7 @@ const LEASE_TTL_MS = 2 * 60_000;
 const LEASE_HEARTBEAT_MS = 30_000;
 const STALE_PLANNING_LEASE_MS = 90_000;
 const RATE_LIMIT_COOLDOWN_MS = 5 * 60_000;
-const PLANNING_OCCUPYING_STATES = new Set(["planned", "waiting_for_approval", "approved", "queued", "running", "pending_review", "waiting_for_human_approval"]);
+const PLANNING_OCCUPYING_STATES = new Set(["planned", "waiting_for_approval", "approved", "queued", "running", "pending_review", "waiting_for_human_approval", "failed"]);
 const TERMINAL_TASK_STATES = new Set(["completed", "failed", "cancelled"]);
 type CycleDetails = Record<string, unknown>;
 type CycleResult = { lane: "planning" | "delivery"; action: "propose" | "execute" | "evaluate"; taskId: string | null; featureId: string | null; reason: string; details?: CycleDetails } | { lane: null; action: "idle"; taskId: null; featureId: null; reason: string; details?: CycleDetails };
@@ -38,7 +38,7 @@ export async function runAutomationCycle({ supabase, projectId, owner = "automat
     await event(supabase, projectId, "completed_task_context_reconciled", { repaired_task_count: repairedContexts });
   }
   const [{ data: tasks }, { data: features }, { data: questions }] = await Promise.all([
-    supabase.from("tasks").select("id, category, feature_id, state, objective").eq("project_id", projectId).is("archived_at", null).order("category").order("priority").order("created_at"),
+    supabase.from("tasks").select("id, category, feature_id, state, objective, last_automation_outcome").eq("project_id", projectId).is("archived_at", null).order("category").order("priority").order("created_at"),
     supabase.from("features").select("id").eq("project_id", projectId).in("status", ["active", "in_development"]).order("priority"),
     supabase.from("clarification_questions").select("feature_id").eq("project_id", projectId).eq("status", "open"),
   ]);
@@ -57,8 +57,8 @@ export async function runAutomationCycle({ supabase, projectId, owner = "automat
   return [deliveryResult, ...planningResults];
 }
 
-async function runDeliveryLane(supabase: Supabase, projectId: string, owner: string, openTasks: Array<{ id: string; state: string; objective: string }>, executionBudget: { runsToday: number; dailyRunLimit: number }): Promise<CycleResult> {
-  const deliveryBlockers = openTasks.filter((task) => ["running", "waiting_for_human_approval"].includes(task.state));
+async function runDeliveryLane(supabase: Supabase, projectId: string, owner: string, openTasks: Array<{ id: string; state: string; objective: string; last_automation_outcome?: string | null }>, executionBudget: { runsToday: number; dailyRunLimit: number }): Promise<CycleResult> {
+  const deliveryBlockers = openTasks.filter((task) => ["running", "waiting_for_human_approval", "failed"].includes(task.state));
   if (deliveryBlockers.length) return idle("Delivery is blocked by an active run or unresolved branch.", { blocking_tasks: taskDetails(deliveryBlockers) });
   const review = openTasks.find((task) => task.state === "pending_review");
   if (review && await claim(supabase, projectId, "delivery", review.id, "evaluate", owner)) {
@@ -66,7 +66,8 @@ async function runDeliveryLane(supabase: Supabase, projectId: string, owner: str
     return evaluate(supabase, projectId, review.id, owner);
   }
   if (review) return idle("AI review is already being claimed by another automation cycle.", { blocking_tasks: taskDetails([review]), required_action: "evaluate", lease: await leaseDetails(supabase, projectId, "delivery") });
-  const queued = openTasks.find((task) => ["approved", "queued"].includes(task.state));
+  // A retry remains the active task and always precedes ordinary queue work.
+  const queued = openTasks.find((task) => task.state === "approved") ?? openTasks.find((task) => task.state === "queued");
   if (queued && executionBudget.runsToday >= executionBudget.dailyRunLimit) {
     return idle("API rate limit reached: Daily limit of " + executionBudget.dailyRunLimit + " run" + (executionBudget.dailyRunLimit === 1 ? "" : "s") + " reached.", { runs_today: executionBudget.runsToday, daily_run_limit: executionBudget.dailyRunLimit, task_id: queued.id });
   }
@@ -184,7 +185,7 @@ async function plan(supabase: Supabase, projectId: string, owner: string, featur
     const scan = await scanRepository(repository);
     const [{ data: featureNode }, { data: activeTasks }, { data: outcomes }, { data: answeredClarifications }] = await Promise.all([
       feature?.context_node_id ? supabase.from("context_nodes").select("content").eq("id", feature.context_node_id).maybeSingle() : Promise.resolve({ data: null }),
-      supabase.from("tasks").select("id, category, priority, feature_id, state, objective").eq("project_id", projectId).in("state", ["planned", "queued", "running", "pending_review", "waiting_for_approval", "waiting_for_human_approval", "approved"]).is("archived_at", null),
+      supabase.from("tasks").select("id, category, priority, feature_id, state, objective").eq("project_id", projectId).in("state", ["planned", "queued", "running", "pending_review", "waiting_for_approval", "waiting_for_human_approval", "approved", "failed"]).is("archived_at", null),
       supabase.from("events").select("event_type, payload, created_at").eq("project_id", projectId).in("event_type", ["task_completed", "task_rejected", "task_feedback"]).order("created_at", { ascending: false }).limit(8),
       supabase.from("clarification_questions").select("feature_id, question, answer, rationale, answered_at").eq("project_id", projectId).eq("status", "answered").order("answered_at", { ascending: false }).limit(20),
     ]);

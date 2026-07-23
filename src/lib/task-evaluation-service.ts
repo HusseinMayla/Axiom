@@ -3,6 +3,8 @@ import { reviewTask } from "@/lib/ai/task-execution";
 import { getBranchDiff, deleteRepositoryBranch, repositoryFromProjectSettings } from "@/lib/github/app";
 import { updateProjectImplementationState } from "@/lib/project-status";
 
+const MAX_AUTOMATIC_RETRIES = 2;
+
 export async function evaluateCompletedTask(supabase: SupabaseClient, projectId: string, taskId: string, trigger: "human" | "automation" = "human", automationLeaseOwner?: string) {
   if (trigger === "automation" && !automationLeaseOwner) throw new Error("Automated evaluation requires its delivery lease owner.");
   let taskQuery = supabase.from("tasks").select("id, state, feature_id, objective, developer_prompt, allowed_paths, acceptance_criteria, validation_commands, developer_report, branch_name, execution_attempt_count, automation_attempt_count, automation_lease_owner, features(context_node_id)").eq("id", taskId).eq("project_id", projectId);
@@ -70,8 +72,10 @@ export async function evaluateCompletedTask(supabase: SupabaseClient, projectId:
     await supabase.from("events").insert({ project_id: projectId, actor_type: "ai", event_type: "automation_evaluated", payload: { task_id: taskId, verdict: "pass", summary: review.summary } });
     return { verdict: "pass" as const, summary: review.summary, feedback: review.feedback, nextState: "waiting_for_human_approval" };
   }
-  const retryCapReached = trigger === "automation" && task.automation_attempt_count >= 2;
-  const nextState = trigger === "human" ? "failed" : retryCapReached ? "waiting_for_approval" : "approved";
+  // The attempt counter includes the first execution, so allow that execution
+  // plus two automatic retries before returning control to the human.
+  const retryCapReached = trigger === "automation" && task.automation_attempt_count > MAX_AUTOMATIC_RETRIES;
+  const nextState = trigger === "human" || retryCapReached ? "failed" : "approved";
   const manualValidationFailure = trigger === "human";
   await updateEvaluationOutcome(supabase, taskId, {
     state: nextState,
@@ -82,7 +86,7 @@ export async function evaluateCompletedTask(supabase: SupabaseClient, projectId:
     execution_attempt_count: 0,
     last_automation_outcome: manualValidationFailure ? "manual_validation_failed" : retryCapReached ? "retry_cap_reached" : "retry",
     automation_paused_at: manualValidationFailure || retryCapReached ? now : null,
-    review_feedback: "AI Reviewer Rejected PR:\n" + review.feedback.join("\n") + (manualValidationFailure ? "\n\nAutomatic flow is frozen. Review the evidence, then return this task to the queue when you are ready to retry." : retryCapReached ? "\n\nAutomatic retry limit reached. Human approval is required before another run." : ""),
+    review_feedback: "AI Reviewer Rejected PR:\n" + review.feedback.join("\n") + (manualValidationFailure ? "\n\nAutomatic flow is frozen. Review the evidence, then retry, return this task to the queue, or delete it." : retryCapReached ? "\n\nThe automatic retry limit of two retries has been reached. Retry, return this task to the queue, or delete it." : ""),
     automation_lease_owner: null,
     updated_at: now,
   }, automationLeaseOwner);

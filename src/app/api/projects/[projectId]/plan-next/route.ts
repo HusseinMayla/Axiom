@@ -5,7 +5,7 @@ import { normalizeHumanPrerequisites, serializeHumanPrerequisites } from "@/lib/
 import { scanRepository, type AvailableRepository } from "@/lib/github/app";
 import { planningScopeBlocker } from "@/lib/automation-eligibility";
 
-const ACTIVE_TASK_STATES = ["planned", "queued", "running", "pending_review", "waiting_for_approval", "waiting_for_human_approval", "approved"];
+const ACTIVE_TASK_STATES = ["planned", "queued", "running", "pending_review", "waiting_for_approval", "waiting_for_human_approval", "approved", "failed"];
 const requestSchema = z.object({
   recommendation: z.string().trim().min(10).max(4000),
   category: z.enum(["general", "feature"]),

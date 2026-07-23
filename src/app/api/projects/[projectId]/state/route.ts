@@ -5,7 +5,7 @@ import { updateProjectImplementationState } from "@/lib/project-status";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const updateSchema = z.object({ state: z.enum(["active", "completed"]) });
-const ACTIVE_TASK_STATES = ["planned", "waiting_for_approval", "approved", "queued", "running", "pending_review", "waiting_for_human_approval"];
+const ACTIVE_TASK_STATES = ["planned", "waiting_for_approval", "approved", "queued", "running", "pending_review", "waiting_for_human_approval", "failed"];
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;

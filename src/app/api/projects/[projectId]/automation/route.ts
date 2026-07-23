@@ -25,7 +25,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pro
   if (!project) return Response.json({ error: "Project not found." }, { status: 404 });
   const hasPendingReview = (tasks ?? []).some((task) => task.state === "pending_review");
   const hasQueuedTask = (tasks ?? []).some((task) => ["approved", "queued"].includes(task.state));
-  const planningTasks = (tasks ?? []).filter((task) => ["planned", "waiting_for_approval", "approved", "queued", "running", "pending_review", "waiting_for_human_approval"].includes(task.state));
+  const planningTasks = (tasks ?? []).filter((task) => ["planned", "waiting_for_approval", "approved", "queued", "running", "pending_review", "waiting_for_human_approval", "failed"].includes(task.state));
   const canPropose = project.state === "active" && (isPlanningScopeEligible({ category: "general" }, planningTasks, questions ?? [])
     || (features ?? []).some((feature) => isPlanningScopeEligible({ category: "feature", featureId: feature.id }, planningTasks, questions ?? [])));
   const openPrerequisites = (tasks ?? []).flatMap((task) => normalizeHumanPrerequisites((task as { human_actions?: unknown }).human_actions).filter((action) => !action.optional && !action.acknowledgedAt));

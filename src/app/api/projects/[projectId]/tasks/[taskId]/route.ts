@@ -15,6 +15,7 @@ const updateTaskSchema = z.object({
   feedback: z.string().trim().min(1).max(4000).optional(),
   archive: z.boolean().optional(),
   resetExecution: z.boolean().optional(),
+  returnToQueue: z.boolean().optional(),
 });
 
 export async function PATCH(
@@ -61,7 +62,9 @@ export async function PATCH(
   }
   if (parsed.data.approve) {
     if (task.state !== "waiting_for_approval") return Response.json({ error: "Only a waiting task can be approved." }, { status: 409 });
-    update.state = "approved";
+    // A newly approved proposal is ordinary queue work. `approved` is reserved
+    // for the active task after an AI or human-directed retry.
+    update.state = "queued";
     update.automation_attempt_count = 0;
     update.last_automation_outcome = "human_reapproved";
     update.automation_paused_at = null;
@@ -100,7 +103,9 @@ export async function PATCH(
 
   if (parsed.data.rejectHumanApproval) {
     if (task.state !== "waiting_for_human_approval") return Response.json({ error: "Only tasks waiting for human approval can be rejected for redo." }, { status: 409 });
-    update.state = "approved";
+    // Human feedback stays with this task until the human explicitly retries,
+    // queues, or deletes it. It must not disappear into the ready queue.
+    update.state = "failed";
     update.branch_name = null;
     update.head_sha = null;
     update.execution_started_at = null;
@@ -110,6 +115,12 @@ export async function PATCH(
     update.automation_lease_owner = null;
     const { updateProjectImplementationState } = await import("@/lib/project-status");
     await updateProjectImplementationState({ supabase, projectId, state: "not_started", summary: "Task implementation rejected for redo." });
+  }
+
+  if (parsed.data.returnToQueue) {
+    if (!["approved", "failed"].includes(task.state)) return Response.json({ error: "Only a task awaiting retry can be returned to the queue." }, { status: 409 });
+    update.state = "queued";
+    update.automation_lease_owner = null;
   }
 
   if (parsed.data.archive) {
@@ -134,7 +145,7 @@ export async function PATCH(
   // before waking delivery. Without this, a GitHub Actions worker can keep the
   // delivery lane leased after its task is visibly back in the ready queue.
   let leaseReleaseWarning: string | null = null;
-  const invalidatesDelivery = Boolean(parsed.data.archive || parsed.data.resetExecution || parsed.data.rejectHumanApproval);
+  const invalidatesDelivery = Boolean(parsed.data.archive || parsed.data.resetExecution || parsed.data.rejectHumanApproval || parsed.data.returnToQueue);
   if (invalidatesDelivery && task.automation_lease_owner) {
     const { error: leaseError } = await supabase.rpc("release_automation_lease", {
       p_project_id: projectId,
@@ -159,7 +170,7 @@ export async function PATCH(
   // Every transition that places a task back in `approved` must wake delivery.
   // Otherwise Retry task can leave a valid task stranded in the queue until a
   // human manually runs an automation cycle.
-  const requeuedForExecution = (parsed.data.resetExecution && task.state === "failed") || parsed.data.rejectHumanApproval;
+  const requeuedForExecution = (parsed.data.resetExecution && task.state === "failed") || parsed.data.returnToQueue;
   if (parsed.data.approve || parsed.data.rejectProposal || parsed.data.mergeHumanApproval || requeuedForExecution) {
     after(async () => {
       const { data: project } = await supabase.from("projects").select("automation_state").eq("id", projectId).maybeSingle();
@@ -187,7 +198,7 @@ export async function PATCH(
     }
   }
 
-  const eventType = parsed.data.archive ? "task_archived" : parsed.data.resetExecution ? "task_execution_reset" : parsed.data.mergeHumanApproval ? "task_completed" : parsed.data.rejectProposal ? "task_rejected" : parsed.data.feedback ? "task_feedback" : parsed.data.approve ? "task_approved" : "human_prerequisite_acknowledged";
+  const eventType = parsed.data.archive ? "task_archived" : parsed.data.returnToQueue ? "task_requeued" : parsed.data.resetExecution ? "task_execution_reset" : parsed.data.mergeHumanApproval ? "task_completed" : parsed.data.rejectProposal ? "task_rejected" : parsed.data.feedback ? "task_feedback" : parsed.data.approve ? "task_approved" : "human_prerequisite_acknowledged";
   await supabase.from("events").insert({
     project_id: projectId,
     actor_type: "human",
