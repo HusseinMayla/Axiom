@@ -7,7 +7,7 @@ import { changedPaths, commitAndPush, createExecutionSession, destroyExecutionSe
 import type { DeveloperReport } from "@/lib/task-report";
 import { dockerAvailability, sanitize } from "@/lib/execution/docker";
 import { hasPendingRequiredPrerequisites, normalizeHumanPrerequisites } from "@/lib/human-prerequisites";
-import { assertRunActive, finishActiveRun, hasActiveRun, isExecutionCancelled, setActiveRunContainer, startActiveRun } from "@/lib/execution/active-run";
+import { assertPersistedExecutionIsCurrent, assertRunActive, finishActiveRun, hasActiveRun, isExecutionCancelled, setActiveRunContainer, startActiveRun } from "@/lib/execution/active-run";
 import { commandPolicyViolation } from "@/lib/execution/command-policy";
 import { isGeminiRateLimitError } from "@/lib/ai/gemini";
 import { z } from "zod";
@@ -172,6 +172,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
 
     const dependencySetup = await prepareWorkspaceDependencies(session);
     assertRunActive(activeRun);
+    await assertTaskExecutionIsCurrent(supabase, typedTask.id, taskLeaseOwner);
     if (dependencySetup) {
       executionLogs.push({ attempt: 0, command: dependencySetup.command, exit_code: dependencySetup.exitCode, output: sanitize(dependencySetup.output) });
       await persistExecutionProgress(supabase, typedTask.id, 0, executionLogs, taskLeaseOwner);
@@ -197,11 +198,13 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
 
     for (let step = 1; step <= maxAgentSteps; step += 1) {
       assertRunActive(activeRun);
+      await assertTaskExecutionIsCurrent(supabase, typedTask.id, taskLeaseOwner);
       const stepStartMs = Date.now();
       const currentWorkspaceTree = await readWorkspaceTree(activeSession);
       const decisionStartMs = Date.now();
       const decision = await requestDeveloperToolCalls(conversation, step, maxAgentSteps, currentWorkspaceTree, activeRun.controller.signal, developerSettings.model);
       assertRunActive(activeRun);
+      await assertTaskExecutionIsCurrent(supabase, typedTask.id, taskLeaseOwner);
       const thinkingMs = Date.now() - decisionStartMs;
 
       if (decision.modelContent) conversation.push(decision.modelContent);
@@ -256,6 +259,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
         responses.push(...inspected);
       } else if (calls[0].name === "run_command") {
         assertRunActive(activeRun);
+        await assertTaskExecutionIsCurrent(supabase, typedTask.id, taskLeaseOwner);
         const actionStartMs = Date.now();
         const call = calls[0];
         const policyViolation = commandPolicyViolation(call.args.command);
@@ -275,6 +279,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
         responses.push({ functionResponse: { name: call.name, id: call.id, response: { output: result } } });
       } else if (calls[0].name === "write_files") {
         assertRunActive(activeRun);
+        await assertTaskExecutionIsCurrent(supabase, typedTask.id, taskLeaseOwner);
         const actionStartMs = Date.now();
         const call = calls[0];
         await writeTaskFiles(session, call.args.edits, allowedPaths, allowProjectWideWrites);
@@ -286,6 +291,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
         responses.push({ functionResponse: { name: call.name, id: call.id, response: { output: { message: result } } } });
       } else if (calls[0].name === "run_validation") {
         assertRunActive(activeRun);
+        await assertTaskExecutionIsCurrent(supabase, typedTask.id, taskLeaseOwner);
         const actionStartMs = Date.now();
         const call = calls[0];
         const isApproved = (cmd: string) => {
@@ -317,7 +323,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
         await recordExecutionEvent(supabase, projectId, typedTask.id, step, "finish_task", {}, { report: execution, thinking_ms: thinkingMs, action_ms: actionMs, duration_ms: Date.now() - stepStartMs }, "completed");
         break;
       }
-      await persistExecutionProgress(supabase, typedTask.id, step, executionLogs);
+      await persistExecutionProgress(supabase, typedTask.id, step, executionLogs, taskLeaseOwner);
       conversation.push({ role: "user", parts: responses });
     }
     // If the agent never called finish_task, auto-generate a synthetic report from whatever work was done
@@ -332,16 +338,20 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
     }
 
     // A final deterministic validation prevents an agent from accidentally finishing on stale evidence.
+    await assertTaskExecutionIsCurrent(supabase, typedTask.id, taskLeaseOwner);
     const dependencyRefresh = await prepareWorkspaceDependencies(session, true);
     assertRunActive(activeRun);
+    await assertTaskExecutionIsCurrent(supabase, typedTask.id, taskLeaseOwner);
     if (dependencyRefresh) appendValidationLogs(executionLogs, maxAgentSteps + 1, [dependencyRefresh]);
     const validationPlan = dependencyRefresh?.exitCode === 0 || !dependencyRefresh
       ? await resolveValidationPlan(session, validationCommands)
       : { commands: validationCommands, note: null };
     if (validationPlan.note) executionLogs.push({ attempt: maxAgentSteps + 1, command: "orchestrator.validation_plan", exit_code: 0, output: validationPlan.note });
+    await assertTaskExecutionIsCurrent(supabase, typedTask.id, taskLeaseOwner);
     const validations = dependencyRefresh?.exitCode === 0 || !dependencyRefresh
       ? await runValidations(session, validationPlan.commands)
       : [dependencyRefresh];
+    await assertTaskExecutionIsCurrent(supabase, typedTask.id, taskLeaseOwner);
     appendValidationLogs(executionLogs, maxAgentSteps + 1, validations);
     const validationPassed = validations.every((result) => result.exitCode === 0);
     await recordExecutionEvent(
@@ -406,11 +416,11 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
       return Response.json({ type: "waiting_for_human_approval", taskId: typedTask.id, message: feedback });
     }
 
-    await assertTaskNotArchived(supabase, typedTask.id);
+    await assertTaskExecutionIsCurrent(supabase, typedTask.id, taskLeaseOwner);
     assertRunActive(activeRun);
     const headSha = await commitAndPush(session, typedTask.objective, paths);
     pushedBranchName = session.branchName;
-    await assertTaskNotArchived(supabase, typedTask.id);
+    await assertTaskExecutionIsCurrent(supabase, typedTask.id, taskLeaseOwner);
     await finishTask(supabase, typedTask.id, {
       state: "pending_review",
       head_sha: headSha,
@@ -424,6 +434,11 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
     console.error("Axiom task execution failed", error);
     const rateLimited = isGeminiRateLimitError(error);
     if (isExecutionCancelled(error)) {
+      if (pushedBranchName) {
+        await deleteRepositoryBranch(repository, pushedBranchName).catch((cleanupError) => {
+          console.error("Axiom could not clean up a branch pushed during cancellation", cleanupError);
+        });
+      }
       if (session) {
         await recordExecutionEvent(supabase, projectId, typedTask.id, 0, "cancelled", {}, { message: error.message }, "failed").catch(() => undefined);
       }
@@ -628,10 +643,10 @@ async function recordExecutionEvent(
   }
 }
 
-async function assertTaskNotArchived(supabase: SupabaseClient, taskId: string) {
-  const { data, error } = await supabase.from("tasks").select("archived_at").eq("id", taskId).maybeSingle();
+async function assertTaskExecutionIsCurrent(supabase: SupabaseClient, taskId: string, automationLeaseOwner?: string) {
+  const { data, error } = await supabase.from("tasks").select("state, archived_at, automation_lease_owner").eq("id", taskId).maybeSingle();
   if (error) throw new Error(error.message);
-  if (data?.archived_at) throw new Error("Task execution was aborted by a human.");
+  assertPersistedExecutionIsCurrent(data, automationLeaseOwner);
 }
 
 async function setCurrentStatus({

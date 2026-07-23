@@ -32,7 +32,7 @@ export async function PATCH(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return Response.json({ error: "Sign in before updating a task." }, { status: 401 });
 
-  const { data: task } = await supabase.from("tasks").select("id, category, state, archived_at, branch_name, objective, feature_id, human_actions, acceptance_criteria, developer_report").eq("id", taskId).eq("project_id", projectId).maybeSingle();
+  const { data: task } = await supabase.from("tasks").select("id, category, state, archived_at, branch_name, objective, feature_id, human_actions, acceptance_criteria, developer_report, automation_lease_owner").eq("id", taskId).eq("project_id", projectId).maybeSingle();
   if (!task) return Response.json({ error: "Task not found." }, { status: 404 });
 
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
@@ -40,6 +40,7 @@ export async function PATCH(
     await cancelActiveRun(taskId);
     update.archived_at = new Date().toISOString();
     update.state = "failed";
+    update.automation_lease_owner = null;
   }
   if (parsed.data.resetExecution) {
     if (!["running", "pending_review", "failed"].includes(task.state)) return Response.json({ error: "Only a running, failed, or validation-failed task can be reset." }, { status: 409 });
@@ -50,6 +51,7 @@ export async function PATCH(
     update.review_feedback = task.state === "running"
       ? "Execution was cancelled by a human. The task is retained here and can be returned to the queue."
       : task.state === "failed" ? "A human acknowledged the failed automation run and returned it to the queue." : "Validation-failed execution was reset by a human for a clean retry.";
+    update.automation_lease_owner = null;
     if (task.state === "failed") {
       update.automation_attempt_count = 0;
       update.last_automation_outcome = "human_recovered";
@@ -105,6 +107,7 @@ export async function PATCH(
     update.execution_finished_at = null;
     update.execution_attempt_count = 0;
     update.review_feedback = parsed.data.feedback || "Human reviewer rejected the implementation and requested a redo.";
+    update.automation_lease_owner = null;
     const { updateProjectImplementationState } = await import("@/lib/project-status");
     await updateProjectImplementationState({ supabase, projectId, state: "not_started", summary: "Task implementation rejected for redo." });
   }
@@ -126,6 +129,23 @@ export async function PATCH(
 
   const { error } = await supabase.from("tasks").update(update).eq("id", taskId);
   if (error) return Response.json({ error: error.message }, { status: 500 });
+
+  // Human cancellation/retry decisions revoke the remote worker's fence token
+  // before waking delivery. Without this, a GitHub Actions worker can keep the
+  // delivery lane leased after its task is visibly back in the ready queue.
+  let leaseReleaseWarning: string | null = null;
+  const invalidatesDelivery = Boolean(parsed.data.archive || parsed.data.resetExecution || parsed.data.rejectHumanApproval);
+  if (invalidatesDelivery && task.automation_lease_owner) {
+    const { error: leaseError } = await supabase.rpc("release_automation_lease", {
+      p_project_id: projectId,
+      p_lane: "delivery",
+      p_owner: task.automation_lease_owner,
+    });
+    if (leaseError) {
+      console.error("Axiom could not release the cancelled task delivery lease", leaseError);
+      leaseReleaseWarning = "Task was updated, but the previous delivery lease could not be released immediately.";
+    }
+  }
 
   if (parsed.data.approve && task.feature_id) {
     const { error: featureError } = await supabase
@@ -185,7 +205,7 @@ export async function PATCH(
       human_action_id: parsed.data.acknowledgeHumanActionId ?? null,
     },
   });
-  return Response.json({ ok: true, warning: branchCleanupWarning });
+  return Response.json({ ok: true, warning: branchCleanupWarning ?? leaseReleaseWarning });
 }
 
 function repositoryFromProjectSettings(settings: unknown): AvailableRepository | null {

@@ -4,7 +4,7 @@ const runDocker = vi.hoisted(() => vi.fn());
 
 vi.mock("./docker", () => ({ runDocker }));
 
-import { assertRunActive, cancelActiveRun, ExecutionCancelledError, finishActiveRun, hasActiveRun, setActiveRunContainer, startActiveRun } from "./active-run";
+import { assertPersistedExecutionIsCurrent, assertRunActive, cancelActiveRun, ExecutionCancelledError, finishActiveRun, hasActiveRun, setActiveRunContainer, startActiveRun } from "./active-run";
 
 describe("active execution registry", () => {
   it("signals cancellation to an active run", async () => {
@@ -46,5 +46,12 @@ describe("active execution registry", () => {
 
     expect(runDocker).toHaveBeenCalledWith(["rm", "-f", "axiom-taskcontain"], 30_000);
     finishActiveRun(taskId);
+  });
+
+  it("fences a remote worker after a human cancels or replaces its delivery lease", () => {
+    expect(() => assertPersistedExecutionIsCurrent({ state: "running", archived_at: null, automation_lease_owner: "lease-a" }, "lease-a")).not.toThrow();
+    expect(() => assertPersistedExecutionIsCurrent({ state: "failed", archived_at: null, automation_lease_owner: null }, "lease-a")).toThrow(ExecutionCancelledError);
+    expect(() => assertPersistedExecutionIsCurrent({ state: "running", archived_at: "2026-07-23T00:00:00.000Z", automation_lease_owner: "lease-a" }, "lease-a")).toThrow(ExecutionCancelledError);
+    expect(() => assertPersistedExecutionIsCurrent({ state: "running", archived_at: null, automation_lease_owner: "lease-b" }, "lease-a")).toThrow(ExecutionCancelledError);
   });
 });

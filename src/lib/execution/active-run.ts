@@ -7,6 +7,29 @@ export class ExecutionCancelledError extends Error {
   }
 }
 
+type PersistedExecutionState = {
+  state: string;
+  archived_at: string | null;
+  automation_lease_owner: string | null;
+};
+
+/**
+ * The database is the cancellation source of truth for remote workers. An
+ * in-memory AbortController only reaches the server process that owns it, so
+ * GitHub Actions workers must also fence themselves before doing more work.
+ */
+export function assertPersistedExecutionIsCurrent(
+  task: PersistedExecutionState | null,
+  leaseOwner?: string,
+) {
+  if (!task || task.archived_at || task.state !== "running") {
+    throw new ExecutionCancelledError();
+  }
+  if (leaseOwner && task.automation_lease_owner !== leaseOwner) {
+    throw new ExecutionCancelledError();
+  }
+}
+
 export type ActiveRun = { controller: AbortController; containerName: string | null };
 
 const registryKey = Symbol.for("axiom.active-execution-runs");
