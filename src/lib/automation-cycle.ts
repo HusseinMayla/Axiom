@@ -4,6 +4,7 @@ import { proposeTask } from "@/lib/ai/task-planning";
 import { normalizeHumanPrerequisites, serializeHumanPrerequisites } from "@/lib/human-prerequisites";
 import { scanRepository, type AvailableRepository } from "@/lib/github/app";
 import { evaluateCompletedTask } from "@/lib/task-evaluation-service";
+import { reconcileCompletedTaskOutcomes } from "@/lib/project-status";
 import { executeNextTask } from "@/app/api/projects/[projectId]/execute-next/route";
 import { isGeminiRateLimitError } from "@/lib/ai/gemini";
 import { cancelActiveRun } from "@/lib/execution/active-run";
@@ -32,6 +33,10 @@ export async function runAutomationCycle({ supabase, projectId, owner = "automat
   }
 
   await recoverExpiredLeases(supabase, projectId);
+  const repairedContexts = await reconcileCompletedTaskOutcomes({ supabase, projectId });
+  if (repairedContexts > 0) {
+    await event(supabase, projectId, "completed_task_context_reconciled", { repaired_task_count: repairedContexts });
+  }
   const [{ data: tasks }, { data: features }, { data: questions }] = await Promise.all([
     supabase.from("tasks").select("id, category, feature_id, state, objective").eq("project_id", projectId).is("archived_at", null).order("category").order("priority").order("created_at"),
     supabase.from("features").select("id").eq("project_id", projectId).in("status", ["active", "in_development"]).order("priority"),

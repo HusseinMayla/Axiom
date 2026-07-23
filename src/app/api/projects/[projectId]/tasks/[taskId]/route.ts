@@ -32,7 +32,7 @@ export async function PATCH(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return Response.json({ error: "Sign in before updating a task." }, { status: 401 });
 
-  const { data: task } = await supabase.from("tasks").select("id, state, archived_at, branch_name, objective, feature_id, human_actions").eq("id", taskId).eq("project_id", projectId).maybeSingle();
+  const { data: task } = await supabase.from("tasks").select("id, category, state, archived_at, branch_name, objective, feature_id, human_actions, acceptance_criteria, developer_report").eq("id", taskId).eq("project_id", projectId).maybeSingle();
   if (!task) return Response.json({ error: "Task not found." }, { status: 404 });
 
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
@@ -81,8 +81,19 @@ export async function PATCH(
     }
     update.state = "completed";
     update.execution_finished_at = new Date().toISOString();
-    const { updateProjectImplementationState } = await import("@/lib/project-status");
-    await updateProjectImplementationState({ supabase, projectId, state: "completed", summary: task.branch_name ? "Task merged into main branch: " + task.objective : "Human confirmed the existing implementation satisfies this task: " + task.objective });
+    const { recordApprovedTaskOutcome } = await import("@/lib/project-status");
+    await recordApprovedTaskOutcome({
+      supabase,
+      projectId,
+      task: {
+        id: task.id,
+        category: task.category === "feature" ? "feature" : "general",
+        featureId: task.feature_id,
+        objective: task.objective,
+        acceptanceCriteria: task.acceptance_criteria,
+        developerReport: task.developer_report,
+      },
+    });
   }
 
   if (parsed.data.rejectHumanApproval) {
@@ -151,12 +162,23 @@ export async function PATCH(
     }
   }
 
-  const eventType = parsed.data.archive ? "task_archived" : parsed.data.resetExecution ? "task_execution_reset" : parsed.data.rejectProposal ? "task_rejected" : parsed.data.feedback ? "task_feedback" : parsed.data.approve ? "task_approved" : "human_prerequisite_acknowledged";
+  const eventType = parsed.data.archive ? "task_archived" : parsed.data.resetExecution ? "task_execution_reset" : parsed.data.mergeHumanApproval ? "task_completed" : parsed.data.rejectProposal ? "task_rejected" : parsed.data.feedback ? "task_feedback" : parsed.data.approve ? "task_approved" : "human_prerequisite_acknowledged";
   await supabase.from("events").insert({
     project_id: projectId,
     actor_type: "human",
     event_type: eventType,
-    payload: { task_id: taskId, feedback: parsed.data.feedback ?? null, human_action_id: parsed.data.acknowledgeHumanActionId ?? null },
+    payload: {
+      task_id: taskId,
+      feature_id: task.feature_id,
+      objective: task.objective,
+      completed_summary: parsed.data.mergeHumanApproval
+        ? ((task.developer_report as { dashboard_summary?: unknown; summary?: unknown } | null)?.dashboard_summary
+          ?? (task.developer_report as { summary?: unknown } | null)?.summary
+          ?? task.objective)
+        : null,
+      feedback: parsed.data.feedback ?? null,
+      human_action_id: parsed.data.acknowledgeHumanActionId ?? null,
+    },
   });
   return Response.json({ ok: true, warning: branchCleanupWarning });
 }
