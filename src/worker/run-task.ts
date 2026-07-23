@@ -49,7 +49,7 @@ async function main() {
       }, 30_000);
     }
 
-    const response = await executeNextTask(supabase, task.project_id, trigger, taskId, leaseOwner ?? undefined);
+    const response = await executeNextTask(supabase, task.project_id, trigger, taskId, leaseOwner ?? undefined, true);
     const body = await response.json().catch(() => null) as { error?: string; message?: string; type?: string } | null;
     if (!response.ok) throw new Error(body?.error ?? body?.message ?? "Worker execution failed.");
 

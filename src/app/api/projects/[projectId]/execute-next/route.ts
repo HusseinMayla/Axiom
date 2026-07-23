@@ -34,7 +34,7 @@ type TaskRecord = {
   features: Array<{ context_node_id: string | null }> | null;
 };
 
-export async function executeNextTask(supabase: SupabaseClient, projectId: string, trigger: "human" | "automation" = "human", requestedTaskId?: string, automationLeaseOwner?: string) {
+export async function executeNextTask(supabase: SupabaseClient, projectId: string, trigger: "human" | "automation" = "human", requestedTaskId?: string, automationLeaseOwner?: string, isWorkerContinuation = false) {
   const { data: project } = await supabase
     .from("projects")
     .select("id, state, settings, automation_state")
@@ -42,7 +42,10 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
     .single();
   if (!project) return Response.json({ error: "Project not found." }, { status: 404 });
   if (project.state !== "active") return Response.json({ error: project.state === "completed" ? "Resume the completed project before running a task." : "Approve project context before running a task." }, { status: 409 });
-  if (trigger === "human" && project.automation_state !== "frozen") {
+  // The control plane checks this before dispatching a manual worker. A queued
+  // GitHub runner must be allowed to finish that accepted manual job even if
+  // the human resumes automation while the runner is starting.
+  if (trigger === "human" && project.automation_state !== "frozen" && !isWorkerContinuation) {
     return Response.json({ error: "Freeze automatic flow before starting a task manually." }, { status: 409 });
   }
   if (trigger === "automation" && !automationLeaseOwner) {
