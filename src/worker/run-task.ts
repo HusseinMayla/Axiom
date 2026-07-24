@@ -3,6 +3,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { cancelActiveRun } from "@/lib/execution/active-run";
 import { evaluateCompletedTask } from "@/lib/task-evaluation-service";
 import { isGeminiRateLimitError } from "@/lib/ai/gemini";
+import { runAutomationCycle } from "@/lib/automation-cycle";
 
 const LEASE_TTL_MS = 2 * 60_000;
 
@@ -29,6 +30,7 @@ async function main() {
   if (!task) throw new Error("Task " + taskId + " was not found.");
 
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  let executionOutcome: "retry" | null = null;
   try {
     if (leaseOwner) {
       const heartbeat = async () => {
@@ -52,6 +54,7 @@ async function main() {
     const response = await executeNextTask(supabase, task.project_id, trigger, taskId, leaseOwner ?? undefined, true);
     const body = await response.json().catch(() => null) as { error?: string; message?: string; type?: string } | null;
     if (!response.ok) throw new Error(body?.error ?? body?.message ?? "Worker execution failed.");
+    executionOutcome = body?.type === "retry" ? "retry" : null;
 
     // A GitHub Actions runner is ephemeral. Unlike the local control plane it
     // does not have another request waiting to pick up `pending_review`, so it
@@ -59,6 +62,7 @@ async function main() {
     if (body?.type === "pending_review") {
       try {
         const review = await evaluateCompletedTask(supabase, task.project_id, taskId, trigger, leaseOwner ?? undefined);
+        if (review.verdict === "retry" && review.nextState === "approved") executionOutcome = "retry";
         console.log(JSON.stringify({ taskId, outcome: "reviewed", verdict: review.verdict, nextState: review.nextState }));
       } catch (error) {
         const message = error instanceof Error ? error.message : "AI validation failed unexpectedly.";
@@ -96,6 +100,14 @@ async function main() {
       const { error } = await supabase.rpc("release_automation_lease", { p_project_id: task.project_id, p_lane: "delivery", p_owner: leaseOwner });
       if (error) console.error("Axiom worker could not release its delivery lease", error);
     }
+  }
+
+  // A deterministic validation retry does not reach AI review, so no review
+  // worker exists to wake delivery again. Continue the same task immediately
+  // after releasing this worker's lease; the normal cycle will dispatch a new
+  // isolated worker and enforce the retry cap above.
+  if (executionOutcome === "retry" && trigger === "automation") {
+    await runAutomationCycle({ supabase, projectId: task.project_id, owner: "worker-validation-retry-" + taskId });
   }
 }
 

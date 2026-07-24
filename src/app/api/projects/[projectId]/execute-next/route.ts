@@ -16,6 +16,7 @@ export const runtime = "nodejs";
 
 const BRANCH_BLOCKING_STATES = ["running", "pending_review", "waiting_for_human_approval"];
 const DEFAULT_MAX_AGENT_STEPS = 30;
+const MAX_AUTOMATIC_RETRIES = 2;
 
 type TaskRecord = {
   id: string;
@@ -372,7 +373,11 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
     if (!validationPassed) {
       const feedback = "Deterministic validation failed. Fix the recorded command failure before retrying.";
       const { data: currentProject } = await supabase.from("projects").select("automation_state").eq("id", projectId).maybeSingle();
-      const retainForHuman = trigger === "human" || currentProject?.automation_state === "frozen";
+      // The persisted counter was incremented when this execution began. Allow
+      // the initial run plus two automatic retries, then leave the failure in
+      // Active Task for a human decision instead of looping indefinitely.
+      const retryCapReached = trigger === "automation" && typedTask.automation_attempt_count >= MAX_AUTOMATIC_RETRIES;
+      const retainForHuman = trigger === "human" || currentProject?.automation_state === "frozen" || retryCapReached;
       await finishTask(supabase, typedTask.id, {
         state: retainForHuman ? "failed" : "approved",
         branch_name: null,
@@ -380,7 +385,13 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
         head_sha: null,
         developer_report: report,
         execution_logs: executionLogs,
-        review_feedback: retainForHuman ? feedback + " Automatic flow is frozen, so this task remains in Active task until you return it to the queue or remove it." : feedback,
+        last_automation_outcome: trigger === "automation" ? retryCapReached ? "retry_cap_reached" : "retry" : "manual_validation_failed",
+        automation_paused_at: retainForHuman ? new Date().toISOString() : null,
+        review_feedback: retryCapReached
+          ? feedback + " The automatic retry limit of two retries has been reached. Retry, return this task to the queue, or delete it."
+          : retainForHuman
+            ? feedback + " Automatic flow is frozen, so this task remains in Active task until you return it to the queue or remove it."
+            : feedback,
       }, taskLeaseOwner);
       await setCurrentStatus({
         supabase,
