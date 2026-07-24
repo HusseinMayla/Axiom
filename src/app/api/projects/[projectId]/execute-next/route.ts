@@ -562,23 +562,31 @@ async function repairFailedValidation({ session, conversation, task, feedback, m
     if (call.name === "finish_task") return call.args.report;
     if (call.name === "inspect_files") {
       const files = await readTaskFiles(session, call.args.paths);
-      conversation.push({ role: "user", parts: [{ functionResponse: { name: call.name, id: call.id, response: { output: { files } } } }] });
+      conversation.push({ role: "user", parts: [{
+        functionResponse: { name: call.name, id: call.id, response: { output: { files } } },
+      }] });
       continue;
     }
     if (call.name === "write_files") {
       await writeTaskFiles(session, call.args.edits);
-      conversation.push({ role: "user", parts: [{ functionResponse: { name: call.name, id: call.id, response: { output: { message: "Edits were applied." } } }] });
+      conversation.push({ role: "user", parts: [{
+        functionResponse: { name: call.name, id: call.id, response: { output: { message: "Edits were applied." } } },
+      }] });
       continue;
     }
     if (call.name === "run_command") {
       const violation = commandPolicyViolation(call.args.command);
       const result = violation ? { command: call.args.command, exitCode: 1, output: "Command rejected: " + violation } : (await runDeveloperCommands(session, [call.args.command]))[0];
-      conversation.push({ role: "user", parts: [{ functionResponse: { name: call.name, id: call.id, response: { output: result } } }] });
+      conversation.push({ role: "user", parts: [{
+        functionResponse: { name: call.name, id: call.id, response: { output: result } },
+      }] });
       continue;
     }
     const unapproved = call.args.commands.filter((command) => !task.validationCommands.includes(command));
     const results = unapproved.length ? [{ command: unapproved.join(", "), exitCode: 1, output: "Use the task validation commands only." }] : await runValidations(session, call.args.commands);
-    conversation.push({ role: "user", parts: [{ functionResponse: { name: call.name, id: call.id, response: { output: { results } } } }] });
+    conversation.push({ role: "user", parts: [{
+      functionResponse: { name: call.name, id: call.id, response: { output: { results } } },
+    }] });
   }
   return null;
 }
