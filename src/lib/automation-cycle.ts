@@ -67,7 +67,10 @@ async function runDeliveryLane(supabase: Supabase, projectId: string, owner: str
   }
   if (review) return idle("AI review is already being claimed by another automation cycle.", { blocking_tasks: taskDetails([review]), required_action: "evaluate", lease: await leaseDetails(supabase, projectId, "delivery") });
   // A retry remains the active task and always precedes ordinary queue work.
-  const queued = openTasks.find((task) => task.state === "approved") ?? openTasks.find((task) => task.state === "queued");
+  // Existing approved tasks without a retry marker remain queue work.
+  const queued = openTasks.find((task) => task.state === "approved" && (task.last_automation_outcome === "retry" || task.last_automation_outcome === "human_recovered"))
+    ?? openTasks.find((task) => task.state === "queued")
+    ?? openTasks.find((task) => task.state === "approved");
   if (queued && executionBudget.runsToday >= executionBudget.dailyRunLimit) {
     return idle("API rate limit reached: Daily limit of " + executionBudget.dailyRunLimit + " run" + (executionBudget.dailyRunLimit === 1 ? "" : "s") + " reached.", { runs_today: executionBudget.runsToday, daily_run_limit: executionBudget.dailyRunLimit, task_id: queued.id });
   }

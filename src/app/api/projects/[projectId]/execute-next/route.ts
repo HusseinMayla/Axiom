@@ -505,7 +505,7 @@ async function dispatchNextTaskToWorker(supabase: SupabaseClient, projectId: str
     return Response.json({ type: "dispatched", taskId, message: "Task dispatched to the isolated GitHub Actions worker.", workerRepository });
   } catch (error) {
     const diagnostic = error instanceof Error ? error.message : String(error);
-    let resetTaskQuery = supabase.from("tasks").update({ state: "approved", execution_started_at: null, automation_lease_owner: automationLeaseOwner ? null : undefined, review_feedback: "Could not dispatch the GitHub Actions worker: " + diagnostic, updated_at: new Date().toISOString() }).eq("id", taskId).eq("project_id", projectId);
+    let resetTaskQuery = supabase.from("tasks").update({ state: "queued", execution_started_at: null, automation_lease_owner: automationLeaseOwner ? null : undefined, review_feedback: "Could not dispatch the GitHub Actions worker: " + diagnostic, updated_at: new Date().toISOString() }).eq("id", taskId).eq("project_id", projectId);
     if (automationLeaseOwner) resetTaskQuery = resetTaskQuery.eq("automation_lease_owner", automationLeaseOwner);
     await resetTaskQuery;
     console.error("Axiom could not dispatch the GitHub Actions worker", { projectId, taskId, diagnostic });

@@ -13,6 +13,11 @@ export async function evaluateCompletedTask(supabase: SupabaseClient, projectId:
     taskQuery.maybeSingle(),
     supabase.from("projects").select("settings, automation_state").eq("id", projectId).maybeSingle(),
   ]);
+  // A task can be reset, queued, or deleted after this cycle claimed its
+  // lease. That is an expected stale-owner race, not a server error.
+  if (!task && trigger === "automation") {
+    return { verdict: "deferred" as const, summary: "AI validation was superseded by a newer task decision.", feedback: [], nextState: "pending_review" as const };
+  }
   if (!task) throw new Error("Task not found.");
   if (task.state !== "pending_review") throw new Error("Task is not pending bot evaluation.");
   if (trigger === "automation" && project?.automation_state === "frozen") {
