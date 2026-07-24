@@ -1,9 +1,9 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { deleteRepositoryBranch, dispatchAxiomWorker, getRepositoryInstallationToken, hasGitHubActionsWorker, type AvailableRepository } from "@/lib/github/app";
-import { createDeveloperConversation, requestDeveloperToolCalls, type AgentToolCall } from "@/lib/ai/task-execution";
+import { createDeveloperConversation, requestDeveloperToolCalls, reviewTask, type AgentToolCall } from "@/lib/ai/task-execution";
 import type { Content } from "@google/genai";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { changedPaths, commitAndPush, createExecutionSession, destroyExecutionSession, prepareWorkspaceDependencies, readTaskFiles, readWorkspaceTree, runDeveloperCommands, runValidations, WORKSPACE_TREE_IGNORES, writeTaskFiles, type ExecutionSession } from "@/lib/execution/runner";
+import { changedPaths, commitAndPush, createExecutionSession, destroyExecutionSession, prepareWorkspaceDependencies, readDiff, readTaskFiles, readWorkspaceTree, runDeveloperCommands, runValidations, WORKSPACE_TREE_IGNORES, writeTaskFiles, type ExecutionSession } from "@/lib/execution/runner";
 import type { DeveloperReport } from "@/lib/task-report";
 import { dockerAvailability, sanitize } from "@/lib/execution/docker";
 import { hasPendingRequiredPrerequisites, normalizeHumanPrerequisites } from "@/lib/human-prerequisites";
@@ -370,56 +370,58 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
       validationPassed ? "completed" : "failed",
     );
 
-    const paths = await changedPaths(session);
-    const report = {
+    let paths = await changedPaths(session);
+    let report = {
       ...execution,
       validation_results: validations.map((result) => result.command + ": " + (result.exitCode === 0 ? "passed" : "failed") + " — " + result.output.slice(-700)),
     };
+    let finalValidations = validations;
 
     // Deterministic validation is a hard gate. An already-satisfied task is a
     // successful no-op, not a failed run: there is no branch to review because
     // the requested outcome was already present before the worker started.
     if (!validationPassed) {
       const feedback = "Deterministic validation failed. Fix the recorded command failure before retrying.";
-      const retryFeedback = feedback + "\n\nValidation output:\n" + report.validation_results.join("\n");
-      const { data: currentProject } = await supabase.from("projects").select("automation_state").eq("id", projectId).maybeSingle();
-      // The persisted counter was incremented when this execution began. Allow
-      // the initial run plus two automatic retries, then leave the failure in
-      // Active Task for a human decision instead of looping indefinitely.
-      const retryCapReached = trigger === "automation" && typedTask.automation_attempt_count >= MAX_AUTOMATIC_RETRIES;
-      const retainForHuman = trigger === "human" || currentProject?.automation_state === "frozen" || retryCapReached;
-      // Hosted workers are ephemeral. Preserve the failing workspace on the
-      // task branch so both automatic and human retries continue from the
-      // actual failing code rather than redoing the task from the base branch.
-      let retryHeadSha: string | null = null;
-      if (paths.length > 0) {
-        retryHeadSha = await commitAndPush(session, typedTask.objective + " (validation retry)", paths);
-        pushedBranchName = session.branchName;
+      for (let repairAttempt = 1; repairAttempt <= MAX_AUTOMATIC_RETRIES && !finalValidations.every((result) => result.exitCode === 0); repairAttempt += 1) {
+        const retryFeedback = feedback + "\n\nValidation output:\n" + report.validation_results.join("\n");
+        const diff = await readDiff(activeSession);
+        let aiFeedback = retryFeedback;
+        try {
+          const review = await reviewTask({
+            task: agentTask,
+            projectStatus: contextStatus(rootNode.content),
+            featureStatus: featureNode ? contextStatus(featureNode.content) : undefined,
+            diff: diff || "No uncommitted diff was available.",
+            diffStat: paths.length + " changed path(s): " + paths.join(", "),
+            changedPaths: paths,
+            validationResults: finalValidations,
+            executionEvents: [],
+            report,
+            model: developerSettings.model,
+          });
+          aiFeedback += "\n\nAI diagnosis:\n" + [review.summary, ...review.feedback].join("\n");
+        } catch (reviewError) {
+          aiFeedback += "\n\nAI diagnosis was unavailable; inspect and repair the validation output directly. " + (reviewError instanceof Error ? reviewError.message : "");
+        }
+        executionLogs.push({ attempt: maxAgentSteps + repairAttempt, command: "ai.validation_repair", exit_code: 1, output: aiFeedback });
+        await persistExecutionProgress(supabase, typedTask.id, maxAgentSteps + repairAttempt, executionLogs, taskLeaseOwner);
+        const repaired = await repairFailedValidation({ session: activeSession, conversation, task: agentTask, feedback: aiFeedback, model: developerSettings.model });
+        if (!repaired) break;
+        execution = repaired;
+        finalValidations = await runValidations(activeSession, validationPlan.commands);
+        appendValidationLogs(executionLogs, maxAgentSteps + repairAttempt, finalValidations);
+        report = { ...execution, validation_results: finalValidations.map((result) => result.command + ": " + (result.exitCode === 0 ? "passed" : "failed") + " — " + result.output.slice(-700)) };
+        paths = await changedPaths(activeSession);
       }
-      await finishTask(supabase, typedTask.id, {
-        state: retainForHuman ? "failed" : "approved",
-        branch_name: retryHeadSha ? session.branchName : null,
-        base_sha: retryHeadSha ? session.baseSha : null,
-        head_sha: retryHeadSha,
-        developer_report: report,
-        execution_logs: executionLogs,
-        last_automation_outcome: trigger === "automation" ? retryCapReached ? "retry_cap_reached" : "retry" : "manual_validation_failed",
-        automation_paused_at: retainForHuman ? new Date().toISOString() : null,
-        review_feedback: retryCapReached
-          ? retryFeedback + " The automatic retry limit of two retries has been reached. Retry, return this task to the queue, or delete it."
-          : retainForHuman
-            ? retryFeedback + " Automatic flow is frozen, so this task remains in Active task until you return it to the queue or remove it."
-            : retryFeedback,
-      }, taskLeaseOwner);
-      await setCurrentStatus({
-        supabase,
-        contextNode: typedTask.category === "feature" ? featureNode : rootNode,
-        task: typedTask,
-        state: "retry",
-        remainingWork: [feedback],
-        latestReport: report.dashboard_summary || report.summary,
-      });
-      return Response.json({ type: retainForHuman ? "failed" : "retry", taskId: typedTask.id, message: feedback });
+      if (!finalValidations.every((result) => result.exitCode === 0)) {
+        const retryFeedback = feedback + "\n\nValidation output:\n" + report.validation_results.join("\n");
+        await finishTask(supabase, typedTask.id, {
+          state: "failed", developer_report: report, execution_logs: executionLogs,
+          review_feedback: retryFeedback + " The in-session repair limit of two retries has been reached. Retry, return this task to the queue, or delete it.",
+          last_automation_outcome: "retry_cap_reached", automation_paused_at: new Date().toISOString(),
+        }, taskLeaseOwner);
+        return Response.json({ type: "failed", taskId: typedTask.id, message: feedback });
+      }
     }
 
     if (paths.length === 0) {
@@ -538,6 +540,47 @@ async function dispatchNextTaskToWorker(supabase: SupabaseClient, projectId: str
 
 function stringList(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+async function repairFailedValidation({ session, conversation, task, feedback, model }: {
+  session: ExecutionSession;
+  conversation: Content[];
+  task: { objective: string; developerPrompt: string; allowedPaths: string[]; acceptanceCriteria: string[]; validationCommands: string[] };
+  feedback: string;
+  model?: string;
+}): Promise<DeveloperReport | null> {
+  conversation.push({ role: "user", parts: [{ text: "The final validation failed, but the Docker workspace is still live. Repair the existing code now.\n\n" + feedback + "\n\nDo not discard the current work. Inspect the affected files, make the minimal fix, run validation, then call finish_task." }] });
+  for (let step = 1; step <= 8; step += 1) {
+    const tree = await readWorkspaceTree(session);
+    const decision = await requestDeveloperToolCalls(conversation, step, 8, tree, undefined, model);
+    if (decision.modelContent) conversation.push(decision.modelContent);
+    const call = decision.calls[0];
+    if (!call || decision.calls.length !== 1) {
+      conversation.push({ role: "user", parts: [{ text: "Use exactly one declared tool call to inspect, edit, validate, or finish the repair." }] });
+      continue;
+    }
+    if (call.name === "finish_task") return call.args.report;
+    if (call.name === "inspect_files") {
+      const files = await readTaskFiles(session, call.args.paths);
+      conversation.push({ role: "user", parts: [{ functionResponse: { name: call.name, id: call.id, response: { output: { files } } } }] });
+      continue;
+    }
+    if (call.name === "write_files") {
+      await writeTaskFiles(session, call.args.edits);
+      conversation.push({ role: "user", parts: [{ functionResponse: { name: call.name, id: call.id, response: { output: { message: "Edits were applied." } } }] });
+      continue;
+    }
+    if (call.name === "run_command") {
+      const violation = commandPolicyViolation(call.args.command);
+      const result = violation ? { command: call.args.command, exitCode: 1, output: "Command rejected: " + violation } : (await runDeveloperCommands(session, [call.args.command]))[0];
+      conversation.push({ role: "user", parts: [{ functionResponse: { name: call.name, id: call.id, response: { output: result } } }] });
+      continue;
+    }
+    const unapproved = call.args.commands.filter((command) => !task.validationCommands.includes(command));
+    const results = unapproved.length ? [{ command: unapproved.join(", "), exitCode: 1, output: "Use the task validation commands only." }] : await runValidations(session, call.args.commands);
+    conversation.push({ role: "user", parts: [{ functionResponse: { name: call.name, id: call.id, response: { output: { results } } } }] });
+  }
+  return null;
 }
 
 async function resolveValidationPlan(session: ExecutionSession, requested: string[]) {
