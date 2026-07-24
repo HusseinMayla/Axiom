@@ -54,7 +54,6 @@ type TaskContext = {
     allowedPaths: string[];
     acceptanceCriteria: string[];
     validationCommands: string[];
-    allowProjectWideWrites?: boolean;
   };
   projectStatus: unknown;
   featureStatus: unknown;
@@ -93,7 +92,7 @@ export function createDeveloperConversation({
     "SCAFFOLDING EFFICIENCY: When scaffolding a new project (e.g. create-vite), do not spend turns reading, listing (ls), or deleting default starter files (e.g. counter.ts, style.css). Overwrite them directly via write_files.",
     "VALIDATION CONTRACT: Before finishing, verify that every requested `npm run <script>` command actually exists in package.json. Standard Vite projects expose `npm run build`, not lint/typecheck by default. If the task requires lint/typecheck, add working scripts; otherwise validate a standard Vite scaffold with `npm run build`.",
     "DEPENDENCY EFFICIENCY: Do not re-run npm install for packages already installed during setup (e.g. react, react-dom).",
-    "Only write within allowed paths unless this is an approved general task. Make real progress each turn; do not finish until acceptance criteria have evidence from inspection or validation.",
+    "You may write any safe source or configuration file in the repository workspace when needed to deliver the task. The task's allowed paths are planning guidance, not a write restriction. Never edit repository metadata, dependency directories, generated output, or secret credential files. Make real progress each turn; do not finish until acceptance criteria have evidence from inspection or validation.",
     "Task:", JSON.stringify(task),
     "Initial workspace tree (depth 3, captured after dependencies were prepared):", workspaceTree,
     "The workspace tree intentionally excludes:", JSON.stringify(workspaceIgnoreList),
@@ -166,7 +165,7 @@ export async function reviewTask({
 }): Promise<TaskReview> {
   const prompt = [
     "Evaluate one completed Axiom task. You are a pass-or-retry evaluator only: never propose or make edits.",
-    "Return pass only when the net before/after diff stays within allowed paths, deterministic validation passed, and every acceptance criterion has credible evidence. Otherwise return retry with concise, criterion-specific feedback.",
+    "The task's allowed paths are planning guidance, not a write restriction. Return pass only when deterministic validation passed and every acceptance criterion has credible evidence. Otherwise return retry with concise, criterion-specific feedback.",
     "Do not ask for the full repository or intermediate edits. The net diff and supplied context are the decision evidence.",
     "Task:", JSON.stringify(task),
     "Project current status:", JSON.stringify(projectStatus),

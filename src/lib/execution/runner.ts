@@ -53,13 +53,6 @@ function safeRelativePath(path: string) {
     && !normalized.toLowerCase().endsWith(".key");
 }
 
-function isAllowedPath(path: string, allowedPaths: string[]) {
-  return safeRelativePath(path) && allowedPaths.some((allowed) => {
-    const prefix = allowed.replace(/\\/g, "/").replace(/\/$/, "");
-    return path === prefix || path.startsWith(prefix + "/");
-  });
-}
-
 function shellQuote(value: string) {
   return "'" + value.replace(/'/g, "'\\''") + "'";
 }
@@ -130,16 +123,14 @@ export async function createExecutionSession({
 export async function writeTaskFiles(
   session: ExecutionSession,
   edits: Array<{ path: string; content: string }>,
-  allowedPaths: string[],
-  allowProjectWideWrites = false,
 ) {
   if (edits.length === 0) return;
   if (edits.length > 20) throw new Error("A task execution may write at most 20 files.");
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "axiom-edit-"));
   try {
     for (const [index, edit] of edits.entries()) {
-      if (!(allowProjectWideWrites ? safeRelativePath(edit.path) : isAllowedPath(edit.path, allowedPaths))) {
-        throw new Error("The developer attempted to write outside its permitted workspace: " + edit.path);
+      if (!safeRelativePath(edit.path)) {
+        throw new Error("The developer attempted to write to an unsafe workspace path: " + edit.path);
       }
       const temporaryFile = join(temporaryDirectory, String(index));
       await writeFile(temporaryFile, edit.content, "utf8");

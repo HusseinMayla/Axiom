@@ -39,6 +39,7 @@ describe("result evaluator", () => {
     expect(request.input).toContain("Feature current status");
     expect(request.input).toContain("Diff stat");
     expect(request.input).toContain("Relevant execution events");
+    expect(request.input).toContain("planning guidance, not a write restriction");
   });
 
   it("returns criterion-specific retry feedback", async () => {

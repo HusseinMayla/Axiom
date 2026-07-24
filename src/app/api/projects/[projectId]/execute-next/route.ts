@@ -82,7 +82,6 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
   const typedTask = task as TaskRecord;
   const taskLeaseOwner = trigger === "automation" ? automationLeaseOwner : undefined;
   const allowedPaths = stringList(typedTask.allowed_paths);
-  const allowProjectWideWrites = typedTask.category === "general";
   const acceptanceCriteria = stringList(typedTask.acceptance_criteria);
   const validationCommands = stringList(typedTask.validation_commands);
   const prerequisites = normalizeHumanPrerequisites(typedTask.human_actions);
@@ -92,10 +91,6 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
       pendingPrerequisites: prerequisites.filter((item) => !item.optional && !item.acknowledgedAt).map((item) => item.action),
     }, { status: 409 });
   }
-  if (!allowProjectWideWrites && allowedPaths.length === 0) {
-    return Response.json({ error: "Feature tasks need allowed paths before they can run safely." }, { status: 409 });
-  }
-
   const featureContextNodeId = (Array.isArray(typedTask.features) ? typedTask.features[0]?.context_node_id : null) ?? null;
   const [{ data: rootNode }, { data: featureNode }] = await Promise.all([
     supabase.from("context_nodes").select("id, content").eq("project_id", projectId).eq("kind", "project").eq("status", "approved").order("created_at", { ascending: false }).limit(1).maybeSingle(),
@@ -182,7 +177,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
       }
     }
 
-    const agentTask = { objective: typedTask.objective, developerPrompt: typedTask.developer_prompt, allowedPaths, acceptanceCriteria, validationCommands, allowProjectWideWrites };
+    const agentTask = { objective: typedTask.objective, developerPrompt: typedTask.developer_prompt, allowedPaths, acceptanceCriteria, validationCommands };
     const workspaceTree = await readWorkspaceTree(session);
     const conversation: Content[] = createDeveloperConversation({
       task: agentTask,
@@ -282,7 +277,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
         await assertTaskExecutionIsCurrent(supabase, typedTask.id, taskLeaseOwner);
         const actionStartMs = Date.now();
         const call = calls[0];
-        await writeTaskFiles(session, call.args.edits, allowedPaths, allowProjectWideWrites);
+        await writeTaskFiles(session, call.args.edits);
         const actionMs = Date.now() - actionStartMs;
         const result = "Edits were applied. Inspect or validate them before finishing.";
         const paths = call.args.edits.map((edit) => edit.path).join(", ");
@@ -366,9 +361,6 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
     );
 
     const paths = await changedPaths(session);
-    if (!allowProjectWideWrites && paths.some((path) => !pathAllowed(path, allowedPaths))) {
-      throw new Error("Execution changed a file outside the task's allowed paths.");
-    }
     const report = {
       ...execution,
       validation_results: validations.map((result) => result.command + ": " + (result.exitCode === 0 ? "passed" : "failed") + " — " + result.output.slice(-700)),
@@ -534,10 +526,6 @@ async function resolveValidationPlan(session: ExecutionSession, requested: strin
   } catch {
     return { commands: requested, note: null };
   }
-}
-
-function pathAllowed(path: string, allowedPaths: string[]) {
-  return allowedPaths.some((allowed) => path === allowed || path.startsWith(allowed.replace(/\/$/, "") + "/"));
 }
 
 function appendValidationLogs(target: Array<{ attempt: number; command: string; exit_code: number; output: string }>, attempt: number, results: Array<{ command: string; exitCode: number; output: string }>) {

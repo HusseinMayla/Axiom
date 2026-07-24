@@ -47,5 +47,7 @@ describe("developer function calls", () => {
     expect(prompt).toContain("package.json\nsrc\nsrc/lib");
     expect(prompt).toContain("node_modules (installed package contents)");
     expect(prompt).toContain("Do not spend a run_command turn on ls");
+    expect(prompt).toContain("planning guidance, not a write restriction");
+    expect(prompt).toContain("any safe source or configuration file");
   });
 });
