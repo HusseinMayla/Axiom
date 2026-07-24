@@ -20,6 +20,7 @@ const MAX_AUTOMATIC_RETRIES = 2;
 
 type TaskRecord = {
   id: string;
+  state: string;
   category: "general" | "feature";
   feature_id: string | null;
   objective: string;
@@ -32,11 +33,12 @@ type TaskRecord = {
   human_actions: unknown;
   branch_name: string | null;
   automation_attempt_count: number;
+  last_automation_outcome: string | null;
   automation_lease_owner: string | null;
   features: Array<{ context_node_id: string | null }> | null;
 };
 
-export async function executeNextTask(supabase: SupabaseClient, projectId: string, trigger: "human" | "automation" = "human", requestedTaskId?: string, automationLeaseOwner?: string, isWorkerContinuation = false) {
+export async function executeNextTask(supabase: SupabaseClient, projectId: string, trigger: "human" | "automation" = "human", requestedTaskId?: string, automationLeaseOwner?: string, isWorkerContinuation = false, allowManualRetry = false) {
   const { data: project } = await supabase
     .from("projects")
     .select("id, state, settings, automation_state")
@@ -47,7 +49,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
   // The control plane checks this before dispatching a manual worker. A queued
   // GitHub runner must be allowed to finish that accepted manual job even if
   // the human resumes automation while the runner is starting.
-  if (trigger === "human" && project.automation_state !== "frozen" && !isWorkerContinuation) {
+  if (trigger === "human" && project.automation_state !== "frozen" && !isWorkerContinuation && !allowManualRetry) {
     return Response.json({ error: "Freeze automatic flow before starting a task manually." }, { status: 409 });
   }
   if (trigger === "automation" && !automationLeaseOwner) {
@@ -72,7 +74,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
 
   let taskQuery = supabase
     .from("tasks")
-    .select("id, category, feature_id, objective, developer_prompt, allowed_paths, acceptance_criteria, validation_commands, execution_logs, review_feedback, human_actions, branch_name, automation_attempt_count, automation_lease_owner, features(context_node_id)")
+    .select("id, state, category, feature_id, objective, developer_prompt, allowed_paths, acceptance_criteria, validation_commands, execution_logs, review_feedback, human_actions, branch_name, automation_attempt_count, last_automation_outcome, automation_lease_owner, features(context_node_id)")
     .eq("project_id", projectId)
     .in("state", requestedTaskId ? ["approved", "queued", "failed", "running"] : ["approved", "queued", "failed"])
     .is("archived_at", null);
@@ -82,6 +84,9 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
   if (!task) return Response.json({ type: "idle", message: "No approved task is waiting for manual execution." });
 
   const typedTask = task as TaskRecord;
+  if (allowManualRetry && (typedTask.state !== "approved" || !["retry", "human_recovered"].includes(typedTask.last_automation_outcome ?? ""))) {
+    return Response.json({ error: "Only the current active retry can be started manually while automation is running." }, { status: 409 });
+  }
   const taskLeaseOwner = trigger === "automation" ? automationLeaseOwner : undefined;
   const allowedPaths = stringList(typedTask.allowed_paths);
   const acceptanceCriteria = stringList(typedTask.acceptance_criteria);
@@ -489,18 +494,20 @@ export async function POST(
 ) {
   const { projectId } = await params;
   let requestedTaskId: string | undefined;
+  let manualRetry = false;
   try {
     const raw = await request.text();
     if (raw) {
-      const parsed = z.object({ taskId: z.string().uuid().optional() }).safeParse(JSON.parse(raw));
+      const parsed = z.object({ taskId: z.string().uuid().optional(), retry: z.boolean().optional() }).safeParse(JSON.parse(raw));
       if (!parsed.success) return Response.json({ error: "Invalid task selection." }, { status: 400 });
       requestedTaskId = parsed.data.taskId;
+      manualRetry = parsed.data.retry === true;
     }
   } catch { return Response.json({ error: "Invalid task selection." }, { status: 400 }); }
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return Response.json({ error: "Sign in before running a task." }, { status: 401 });
-  return executeNextTask(supabase, projectId, "human", requestedTaskId);
+  return executeNextTask(supabase, projectId, "human", requestedTaskId, undefined, false, manualRetry);
 }
 
 async function dispatchNextTaskToWorker(supabase: SupabaseClient, projectId: string, requestedTaskId?: string, automationLeaseOwner?: string) {
