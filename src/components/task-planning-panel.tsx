@@ -59,10 +59,10 @@ export function TaskPlanningPanel({ projectId, tasks, projectStatus, features }:
   const humanApprovalTasks = sortTasks(tasks.filter((task) => !task.archivedAt && task.state === "waiting_for_human_approval"));
   const archivedTasks = sortTasks(tasks.filter((task) => !!task.archivedAt));
 
-  async function request(endpoint: "plan-next" | "execute-next", body?: Record<string, unknown>) {
+  async function request(endpoint: "plan-next" | "execute-next", body?: Record<string, unknown>, executionTaskId?: string) {
     setAction(endpoint === "plan-next" ? "planning" : "running");
     setMessage("");
-    if (endpoint === "execute-next") setActiveExecutionTaskId(developerTasks[0]?.id ?? null);
+    if (endpoint === "execute-next") setActiveExecutionTaskId(executionTaskId ?? developerTasks[0]?.id ?? null);
     const response = await fetch("/api/projects/" + projectId + "/" + endpoint, {
       method: "POST",
       headers: body ? { "Content-Type": "application/json" } : undefined,
@@ -134,7 +134,7 @@ export function TaskPlanningPanel({ projectId, tasks, projectStatus, features }:
         <QueueLane title="Your final decision" detail="Completed, reviewed branches wait here. Your decision unblocks the execution loop." tasks={humanApprovalTasks} empty="No reviewed branch is awaiting your decision." projectId={projectId} onChange={() => router.refresh()} />
         <QueueLane title="Awaiting task approval" detail="Proposed work. Approve a task to place it in the developer queue." tasks={proposalTasks} empty="No task proposals are waiting for approval." projectId={projectId} onChange={() => router.refresh()} />
         <QueueLane title="Review queue" detail="Developer reports will arrive here for a human decision." tasks={reviewTasks} empty="No completed work is awaiting review." projectId={projectId} onChange={() => router.refresh()} />
-        <QueueLane title="Developer queue" detail="Approved work and retryable failures, ordered for the isolated Docker worker." tasks={developerTasks} empty="No approved task is waiting for implementation." action={action} onRun={() => request("execute-next")} projectId={projectId} onChange={() => router.refresh()} activeExecutionTaskId={activeExecutionTaskId} />
+        <QueueLane title="Developer queue" detail="Queued work runs only when you select its exact task; failed work remains available for an explicit recovery decision." tasks={developerTasks} empty="No approved task is waiting for implementation." action={action} onRunTask={(taskId) => request("execute-next", { taskId }, taskId)} projectId={projectId} onChange={() => router.refresh()} activeExecutionTaskId={activeExecutionTaskId} />
       </div>
       {archivedTasks.length > 0 && (
         <details className="use-case-details" style={{ marginTop: "2rem" }}>
@@ -158,6 +158,7 @@ function QueueLane({
   onChange,
   action,
   onRun,
+  onRunTask,
   activeExecutionTaskId,
 }: {
   title: string;
@@ -168,6 +169,7 @@ function QueueLane({
   onChange?: () => void;
   action?: string;
   onRun?: () => void;
+  onRunTask?: (taskId: string) => void;
   activeExecutionTaskId?: string | null;
 }) {
   return (
@@ -175,12 +177,12 @@ function QueueLane({
       <h3>{title}</h3>
       <p>{detail}</p>
       {onRun && <button className="button compact-button" disabled={action === "planning" || action === "running" || tasks.length === 0} onClick={onRun}>{action === "running" ? "Running…" : tasks.some((task) => task.state === "failed") ? "Retry failed task" : "Run next task"}</button>}
-      {tasks.length === 0 ? <p className="queue-empty">{empty}</p> : <div className="queue-task-list">{tasks.map((task) => <TaskCard key={task.id} task={task} projectId={projectId} onChange={onChange} forceLive={task.id === activeExecutionTaskId} />)}</div>}
+      {tasks.length === 0 ? <p className="queue-empty">{empty}</p> : <div className="queue-task-list">{tasks.map((task) => <TaskCard key={task.id} task={task} projectId={projectId} onChange={onChange} forceLive={task.id === activeExecutionTaskId} onRun={onRunTask && ["queued", "approved"].includes(task.state) ? () => onRunTask(task.id) : undefined} running={action === "running"} />)}</div>}
     </section>
   );
 }
 
-function TaskCard({ task, projectId, onChange, forceLive = false }: { task: Task; projectId?: string; onChange?: () => void; forceLive?: boolean }) {
+function TaskCard({ task, projectId, onChange, forceLive = false, onRun, running = false }: { task: Task; projectId?: string; onChange?: () => void; forceLive?: boolean; onRun?: () => void; running?: boolean }) {
   const [approving, setApproving] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -404,6 +406,7 @@ function TaskCard({ task, projectId, onChange, forceLive = false }: { task: Task
           />
         </div>
       )}
+      {onRun && <button className="button compact-button" disabled={running} onClick={onRun}>{running ? "Starting…" : "Run this task"}</button>}
       {!task.archivedAt && ["running", "pending_review", "failed"].includes(task.state) && <button className="button secondary compact-button" disabled={resetting} onClick={resetExecution}>{resetting ? "Resetting…" : task.state === "running" ? "Reset failed execution" : task.state === "failed" ? "Acknowledge & requeue task" : "Retry failed validation"}</button>}
       {!task.archivedAt && !['running', 'pending_review', 'waiting_for_human_approval'].includes(task.state) && <button className="button secondary compact-button" disabled={archiving} onClick={archive}>{archiving ? "Archiving…" : "Archive task"}</button>}
       {!task.archivedAt && ['running', 'pending_review', 'waiting_for_human_approval'].includes(task.state) && <button className="button secondary compact-button" disabled={archiving} onClick={archive}>{archiving ? "Aborting…" : "Abort task"}</button>}
