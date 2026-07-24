@@ -46,8 +46,13 @@ export async function PATCH(
   if (parsed.data.resetExecution) {
     if (!["running", "pending_review", "failed"].includes(task.state)) return Response.json({ error: "Only a running, failed, or validation-failed task can be reset." }, { status: 409 });
     update.state = task.state === "failed" ? "approved" : "failed";
-    update.branch_name = null;
-    update.head_sha = null;
+    // A validation-failed task can have a committed work-in-progress branch.
+    // Keep it for Retry so the next Docker worker repairs the failing code
+    // instead of rebuilding the task from the base branch.
+    if (task.state !== "failed") {
+      update.branch_name = null;
+      update.head_sha = null;
+    }
     update.execution_finished_at = new Date().toISOString();
     update.review_feedback = task.state === "running"
       ? "Execution was cancelled by a human. The task is retained here and can be returned to the queue."
@@ -189,7 +194,7 @@ export async function PATCH(
   }
 
   let branchCleanupWarning: string | null = null;
-  if ((parsed.data.archive || parsed.data.resetExecution || parsed.data.mergeHumanApproval || parsed.data.rejectHumanApproval) && task.branch_name && repository) {
+  if ((parsed.data.archive || (parsed.data.resetExecution && task.state !== "failed") || parsed.data.mergeHumanApproval || parsed.data.rejectHumanApproval) && task.branch_name && repository) {
     try {
       await deleteRepositoryBranch(repository, task.branch_name);
     } catch (branchError) {

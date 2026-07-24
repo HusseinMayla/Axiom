@@ -28,6 +28,7 @@ type TaskRecord = {
   acceptance_criteria: unknown;
   validation_commands: unknown;
   execution_logs: unknown;
+  review_feedback: string | null;
   human_actions: unknown;
   branch_name: string | null;
   automation_attempt_count: number;
@@ -71,7 +72,7 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
 
   let taskQuery = supabase
     .from("tasks")
-    .select("id, category, feature_id, objective, developer_prompt, allowed_paths, acceptance_criteria, validation_commands, execution_logs, human_actions, branch_name, automation_attempt_count, automation_lease_owner, features(context_node_id)")
+    .select("id, category, feature_id, objective, developer_prompt, allowed_paths, acceptance_criteria, validation_commands, execution_logs, review_feedback, human_actions, branch_name, automation_attempt_count, automation_lease_owner, features(context_node_id)")
     .eq("project_id", projectId)
     .in("state", requestedTaskId ? ["approved", "queued", "failed", "running"] : ["approved", "queued", "failed"])
     .is("archived_at", null);
@@ -178,7 +179,10 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
       }
     }
 
-    const agentTask = { objective: typedTask.objective, developerPrompt: typedTask.developer_prompt, allowedPaths, acceptanceCriteria, validationCommands };
+    const retryContext = typedTask.review_feedback
+      ? "\n\nPrevious attempt feedback (fix this in the existing task branch before finishing):\n" + typedTask.review_feedback
+      : "";
+    const agentTask = { objective: typedTask.objective, developerPrompt: typedTask.developer_prompt + retryContext, allowedPaths, acceptanceCriteria, validationCommands };
     const workspaceTree = await readWorkspaceTree(session);
     const conversation: Content[] = createDeveloperConversation({
       task: agentTask,
@@ -372,26 +376,35 @@ export async function executeNextTask(supabase: SupabaseClient, projectId: strin
     // the requested outcome was already present before the worker started.
     if (!validationPassed) {
       const feedback = "Deterministic validation failed. Fix the recorded command failure before retrying.";
+      const retryFeedback = feedback + "\n\nValidation output:\n" + report.validation_results.join("\n");
       const { data: currentProject } = await supabase.from("projects").select("automation_state").eq("id", projectId).maybeSingle();
       // The persisted counter was incremented when this execution began. Allow
       // the initial run plus two automatic retries, then leave the failure in
       // Active Task for a human decision instead of looping indefinitely.
       const retryCapReached = trigger === "automation" && typedTask.automation_attempt_count >= MAX_AUTOMATIC_RETRIES;
       const retainForHuman = trigger === "human" || currentProject?.automation_state === "frozen" || retryCapReached;
+      // Hosted workers are ephemeral. Preserve the failing workspace on the
+      // task branch so both automatic and human retries continue from the
+      // actual failing code rather than redoing the task from the base branch.
+      let retryHeadSha: string | null = null;
+      if (paths.length > 0) {
+        retryHeadSha = await commitAndPush(session, typedTask.objective + " (validation retry)", paths);
+        pushedBranchName = session.branchName;
+      }
       await finishTask(supabase, typedTask.id, {
         state: retainForHuman ? "failed" : "approved",
-        branch_name: null,
-        base_sha: null,
-        head_sha: null,
+        branch_name: retryHeadSha ? session.branchName : null,
+        base_sha: retryHeadSha ? session.baseSha : null,
+        head_sha: retryHeadSha,
         developer_report: report,
         execution_logs: executionLogs,
         last_automation_outcome: trigger === "automation" ? retryCapReached ? "retry_cap_reached" : "retry" : "manual_validation_failed",
         automation_paused_at: retainForHuman ? new Date().toISOString() : null,
         review_feedback: retryCapReached
-          ? feedback + " The automatic retry limit of two retries has been reached. Retry, return this task to the queue, or delete it."
+          ? retryFeedback + " The automatic retry limit of two retries has been reached. Retry, return this task to the queue, or delete it."
           : retainForHuman
-            ? feedback + " Automatic flow is frozen, so this task remains in Active task until you return it to the queue or remove it."
-            : feedback,
+            ? retryFeedback + " Automatic flow is frozen, so this task remains in Active task until you return it to the queue or remove it."
+            : retryFeedback,
       }, taskLeaseOwner);
       await setCurrentStatus({
         supabase,
